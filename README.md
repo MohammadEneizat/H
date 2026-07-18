@@ -16,8 +16,9 @@ model; the app advises you on what to enter and why.
 
 | Capability | Description |
 |---|---|
+| **Import your own curve** | Load a manufacturer characteristic or PowerFactory characteristic export (CSV of `multiple,time`) and the consultant recommends settings against *your* curve — it scales with the time dial like a real relay. |
 | **Recommend settings** | From max load, min/max fault, and downstream fault currents, it proposes a 51 pickup, curve, time dial and 50 instantaneous — each with a written rationale. |
-| **Review settings** | Flags pickup below load (nuisance trips), pickup above min fault (blind spots), instantaneous reaching into a downstream zone (loss of selectivity), and clearing slower than equipment withstand. |
+| **Review settings** | Flags pickup below load (nuisance trips), pickup above min fault (blind spots), instantaneous reaching into a downstream zone (loss of selectivity), and clearing slower than equipment withstand. Import a whole relay table (CSV) and review them all at once. |
 | **Coordination check** | Computes downstream/upstream operate times at each fault point and verifies the Coordination Time Interval (CTI). |
 | **Time-dial optimiser** | Suggests an upstream time dial that just meets the CTI. |
 | **TCC plotting** | Log-log curves with fault markers and instantaneous drops. |
@@ -67,11 +68,47 @@ python -m pf_protcoord.cli recommend --name "Feeder 51" \
     --load 400 --min-fault 3600 --max-fault 6500 \
     --downstream-fault 3600 --downstream-time 0.20 --ct 120 --curve IEC-SI
 
+# Recommend against YOUR imported curve
+python -m pf_protcoord.cli recommend --name "Feeder 51" \
+    --load 400 --min-fault 3600 --max-fault 6500 \
+    --downstream-fault 3600 --downstream-time 0.20 --ct 120 \
+    --curve-file examples/my_curve.csv
+
+# Import a table of your relays and review them all
+python -m pf_protcoord.cli review-relays examples/my_relays.csv
+
 # Render a TCC plot to PNG
 python -m pf_protcoord.cli plot examples/example_feeder.json -o tcc.png
 
 # List built-in curves
 python -m pf_protcoord.cli curves
+```
+
+## Importing your own curve
+
+A curve is a CSV of operate time vs. **multiple of pickup** at time-dial 1 —
+the form used by manufacturer datasheets and PowerFactory characteristic
+exports. See [`examples/my_curve.csv`](examples/my_curve.csv):
+
+```
+multiple,time
+2,4.30
+5,1.15
+10,0.60
+20,0.36
+```
+
+If your table is in **current vs. time** instead, add a reference pickup and the
+importer converts it (`--curve-pickup` on the CLI, or the field in the UI).
+Once imported, the curve appears in the curve dropdown and works everywhere:
+recommend, review, coordination and plots. In code:
+
+```python
+from pf_protcoord import import_curve_from_csv, recommend_oc_settings
+name = import_curve_from_csv("my_curve.csv")          # -> "my_curve"
+rec = recommend_oc_settings(max_load_current=400, min_fault_current=3600,
+                            max_fault_current=6500, curve=name,
+                            downstream_max_fault=3600, downstream_trip_time=0.20)
 ```
 
 ### As a library

@@ -25,8 +25,11 @@ from .consultant import (DeviceContext, Finding, SettingRecommendation,
                          Severity, recommend_oc_settings, review_device)
 from .coordination import (CoordinationResult, check_all, check_pair,
                            suggest_time_dial, summary)
-from .curves import available_curves, curve_points, operating_time
+from .curves import (available_curves, curve_points, is_custom_curve,
+                     operating_time, register_custom_curve)
 from .devices import CoordinationPair, FaultPoint, Fuse, ProtectiveDevice
+from .imports import (import_curve_from_csv, import_curve_from_json,
+                      import_curve_from_text, import_relays_from_csv)
 from .project import load_project
 from .report import (consultant_markdown, findings_text, markdown_report,
                      recommendation_text, text_report)
@@ -36,6 +39,9 @@ __version__ = "0.1.0"
 __all__ = [
     "ProtectiveDevice", "Fuse", "FaultPoint", "CoordinationPair",
     "operating_time", "available_curves", "curve_points",
+    "register_custom_curve", "is_custom_curve",
+    "import_curve_from_csv", "import_curve_from_json",
+    "import_curve_from_text", "import_relays_from_csv",
     "check_all", "check_pair", "suggest_time_dial", "summary",
     "CoordinationResult",
     "recommend_oc_settings", "review_device", "DeviceContext",

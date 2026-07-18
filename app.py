@@ -16,23 +16,46 @@ import json
 import streamlit as st
 
 from pf_protcoord import (available_curves, check_all, curve_points,
-                          load_project, recommend_oc_settings, summary)
-from pf_protcoord.consultant import (DeviceContext, Severity, _SEV_LABEL,
-                                     review_device)
+                          import_curve_from_text, import_relays_from_csv,
+                          load_project, recommend_oc_settings, review_device,
+                          summary)
+from pf_protcoord.consultant import DeviceContext, Severity, _SEV_LABEL
 from pf_protcoord.devices import ProtectiveDevice
-from pf_protcoord.report import consultant_markdown, markdown_report
+from pf_protcoord.report import (consultant_markdown, findings_text,
+                                 markdown_report)
 
 st.set_page_config(page_title="Protection Coordination Consultant", layout="wide")
 st.title("⚡ Protection Coordination Consultant")
 st.caption("Bring your PowerFactory load & short-circuit numbers — get expert "
            "50/51 setting recommendations and grading review.")
 
-tab_rec, tab_review, tab_curves = st.tabs(
-    ["🧠 Recommend settings", "🔍 Review a study", "📈 Curves"])
+tab_rec, tab_review, tab_relays, tab_curves = st.tabs(
+    ["🧠 Recommend settings", "🔍 Review a study",
+     "📥 Import my relays", "📈 Curves"])
 
 # --------------------------------------------------------------------------
 with tab_rec:
     st.subheader("Recommend 50/51 settings for one relay")
+
+    with st.expander("📈 Import my own curve (optional)"):
+        st.caption("CSV with columns `multiple,time` (operate time at time-dial 1), "
+                   "or `current,time` plus a reference pickup. From a manufacturer "
+                   "datasheet or a PowerFactory characteristic export.")
+        cf = st.file_uploader("Curve CSV", type=["csv", "txt"], key="curvefile")
+        cpick = st.number_input("Reference pickup (only if file is current,time)",
+                                value=0.0, min_value=0.0)
+        if cf is not None:
+            try:
+                cname = import_curve_from_text(
+                    cf.getvalue().decode(),
+                    name=cf.name.rsplit(".", 1)[0],
+                    pickup=cpick or None,
+                )
+                st.success(f"Imported curve '{cname}' — now selectable below.")
+            except Exception as exc:
+                st.error(f"Could not import curve: {exc}")
+
+    curves = available_curves()
     c1, c2, c3 = st.columns(3)
     with c1:
         name = st.text_input("Relay name", "Feeder 51")
@@ -45,8 +68,8 @@ with tab_rec:
         down_fault = st.number_input("Max fault beyond downstream device (A)",
                                      value=3600.0, min_value=0.0)
     with c3:
-        curve = st.selectbox("Curve", available_curves(),
-                             index=available_curves().index("IEC-SI"))
+        curve = st.selectbox("Curve (imported curves appear here)", curves,
+                             index=curves.index("IEC-SI") if "IEC-SI" in curves else 0)
         cti = st.number_input("Required CTI (s)", value=0.30, min_value=0.0, step=0.05)
         down_time = st.number_input("Downstream operate time @ max fault (s)",
                                     value=0.20, min_value=0.0, step=0.05)
@@ -96,6 +119,49 @@ with tab_review:
             st.pyplot(fig)
         except Exception as exc:  # pragma: no cover
             st.info(f"Plot unavailable: {exc}")
+
+# --------------------------------------------------------------------------
+with tab_relays:
+    st.subheader("Import a relay table and get recommendations")
+    st.caption("CSV columns: name, pickup_primary, time_dial, curve, ct_ratio, "
+               "inst_pickup_primary, max_load_current, min_fault_current, "
+               "max_fault_current, downstream_max_fault. "
+               "See examples/my_relays.csv for the format.")
+    ru = st.file_uploader("Relays CSV", type=["csv"], key="relayfile")
+    use_ex = st.checkbox("Use bundled example relays", value=ru is None)
+
+    csv_path = None
+    if ru is not None:
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tf:
+            tf.write(ru.getvalue().decode())
+            csv_path = tf.name
+    elif use_ex:
+        csv_path = "examples/my_relays.csv"
+
+    if csv_path:
+        try:
+            pairs = import_relays_from_csv(csv_path)
+            crit = warn = 0
+            for dev, ctx in pairs:
+                findings = review_device(dev, ctx)
+                worst = max((f.severity for f in findings), default=Severity.INFO)
+                crit += sum(1 for f in findings if f.severity == Severity.CRITICAL)
+                warn += sum(1 for f in findings if f.severity == Severity.WARNING)
+                icon = {Severity.CRITICAL: "🛑", Severity.WARNING: "⚠️",
+                        Severity.ADVISORY: "🟦", Severity.INFO: "✅"}[worst]
+                with st.expander(f"{icon} {dev.name} — {dev.curve}, "
+                                 f"pickup {dev.pickup_primary:,.0f} A, TD {dev.time_dial}",
+                                 expanded=worst >= Severity.WARNING):
+                    for f in findings:
+                        st.markdown(f"**{_SEV_LABEL[f.severity]}** ({f.category}) — {f.message}"
+                                    + (f"\n\n→ _{f.recommendation}_" if f.recommendation else ""))
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Relays", len(pairs))
+            m2.metric("Critical issues", crit)
+            m3.metric("Warnings", warn)
+        except Exception as exc:
+            st.error(f"Could not process relay CSV: {exc}")
 
 # --------------------------------------------------------------------------
 with tab_curves:

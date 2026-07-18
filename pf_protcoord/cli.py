@@ -21,8 +21,11 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import (available_curves, check_all, load_project, markdown_report,
-               recommend_oc_settings, recommendation_text, summary, text_report)
+from . import (available_curves, check_all, import_curve_from_csv,
+               import_relays_from_csv, load_project, markdown_report,
+               recommend_oc_settings, recommendation_text, review_device,
+               summary, text_report)
+from .report import findings_text
 
 
 def _cmd_review(args) -> int:
@@ -32,14 +35,30 @@ def _cmd_review(args) -> int:
     return 0 if summary(results)["all_ok"] else 1
 
 
+def _cmd_review_relays(args) -> int:
+    pairs = import_relays_from_csv(args.csv)
+    any_issue = False
+    for dev, ctx in pairs:
+        findings = review_device(dev, ctx)
+        print(f"\n### {dev.name}  ({dev.curve}, pickup {dev.pickup_primary:,.0f} A, "
+              f"TD {dev.time_dial})")
+        print(findings_text(findings))
+        any_issue = any_issue or any(f.severity >= 2 for f in findings)
+    return 1 if any_issue else 0
+
+
 def _cmd_recommend(args) -> int:
+    curve = args.curve
+    if args.curve_file:
+        curve = import_curve_from_csv(args.curve_file, pickup=args.curve_pickup)
+        print(f"(imported curve '{curve}' from {args.curve_file})\n")
     rec = recommend_oc_settings(
         max_load_current=args.load,
         min_fault_current=args.min_fault,
         max_fault_current=args.max_fault,
         downstream_max_fault=args.downstream_fault,
         ct_ratio=args.ct,
-        curve=args.curve,
+        curve=curve,
         downstream_trip_time=args.downstream_time,
         required_cti=args.cti,
         transformer_inrush=args.inrush,
@@ -90,9 +109,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="downstream operate time at max fault (s), to size time dial")
     rc.add_argument("--ct", type=float, default=1.0, help="CT ratio (primary/secondary)")
     rc.add_argument("--curve", default="IEC-SI", help="curve key (see 'curves')")
+    rc.add_argument("--curve-file", default=None,
+                    help="import your own curve (CSV of multiple,time) and use it")
+    rc.add_argument("--curve-pickup", type=float, default=None,
+                    help="reference pickup if the curve file is in current,time")
     rc.add_argument("--cti", type=float, default=0.30, help="required CTI (s)")
     rc.add_argument("--inrush", type=float, default=None, help="transformer inrush (A)")
     rc.set_defaults(func=_cmd_recommend)
+
+    rr = sub.add_parser("review-relays",
+                        help="review a CSV of relays + context, print findings")
+    rr.add_argument("csv")
+    rr.set_defaults(func=_cmd_review_relays)
 
     pl = sub.add_parser("plot", help="render a TCC plot from a study")
     pl.add_argument("project")

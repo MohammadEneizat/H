@@ -1,0 +1,4 @@
+name,pickup_primary,time_dial,curve,ct_ratio,inst_pickup_primary,max_load_current,min_fault_current,max_fault_current,downstream_max_fault
+Load-CB 51,300,0.10,IEC-SI,80,4200,500,3600,3600,
+Feeder 51,720,0.20,IEC-SI,120,2000,400,3600,6500,3600
+Incomer 51,1200,0.35,IEC-SI,240,,700,5200,12000,6500
