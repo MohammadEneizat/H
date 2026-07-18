@@ -1,0 +1,6 @@
+# Core toolkit has no hard runtime dependencies (pure Python stdlib).
+# The extras below enable plotting, the Streamlit UI, and tests.
+matplotlib>=3.7
+streamlit>=1.30
+pandas>=2.0
+pytest>=7.0

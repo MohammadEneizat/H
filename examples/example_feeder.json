@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "title": "11 kV radial feeder — worked example",
+    "notes": "Fault currents are illustrative primary values you would read from a PowerFactory ComShc run at each bus."
+  },
+  "devices": [
+    {
+      "name": "Load-CB 51",
+      "pickup_primary": 480,
+      "time_dial": 0.10,
+      "curve": "IEC-SI",
+      "ct_ratio": 80.0,
+      "inst_pickup_primary": 4200,
+      "inst_delay": 0.0
+    },
+    {
+      "name": "Feeder 51",
+      "pickup_primary": 720,
+      "time_dial": 0.20,
+      "curve": "IEC-SI",
+      "ct_ratio": 120.0,
+      "inst_pickup_primary": 9000,
+      "inst_delay": 0.0
+    },
+    {
+      "name": "Incomer 51",
+      "pickup_primary": 1200,
+      "time_dial": 0.35,
+      "curve": "IEC-SI",
+      "ct_ratio": 240.0
+    }
+  ],
+  "faults": [
+    { "location": "Load bus",   "current_primary": 3600, "label": "3ph max" },
+    { "location": "Feeder bus", "current_primary": 6500, "label": "3ph max" },
+    { "location": "MV bus",     "current_primary": 12000, "label": "3ph max" }
+  ],
+  "pairs": [
+    {
+      "downstream": "Load-CB 51",
+      "upstream": "Feeder 51",
+      "fault": "Load bus",
+      "required_cti": 0.30,
+      "notes": "Feeder relay backs up the load breaker."
+    },
+    {
+      "downstream": "Feeder 51",
+      "upstream": "Incomer 51",
+      "fault": "Feeder bus",
+      "required_cti": 0.30,
+      "notes": "Incomer backs up the feeder relay."
+    }
+  ]
+}
