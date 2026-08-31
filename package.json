@@ -1,0 +1,27 @@
+{
+  "name": "spp-grounding",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Grounding design and personnel-protection analysis for utility-scale solar power plants (IEEE Std 2778-2020 / IEEE Std 80-2013).",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0"
+  }
+}
