@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useStudy } from '../state/store';
 import { areaLabel, Card, fmt } from './ui';
 
@@ -20,9 +21,7 @@ export function ReportPanel() {
         subtitle="Print or save to PDF for the design file."
         actions={
           <div className="card-actions">
-            <button className="btn" onClick={() => exportJson(study)}>
-              Export study (JSON)
-            </button>
+            <ExportButton study={study} />
             <button className="btn btn-primary" onClick={() => window.print()}>
               Print / save as PDF
             </button>
@@ -191,12 +190,51 @@ export function ReportPanel() {
   );
 }
 
-function exportJson(study: unknown) {
-  const blob = new Blob([JSON.stringify(study, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'spp-grounding-study.json';
-  a.click();
-  URL.revokeObjectURL(url);
+function ExportButton({ study }: { study: unknown }) {
+  const [label, setLabel] = useState<string | null>(null);
+  return (
+    <button
+      className="btn"
+      onClick={async () => {
+        const how = await exportJson(study);
+        setLabel(how === 'clipboard' ? 'Copied to clipboard' : how === 'download' ? 'Downloaded' : 'Copy from the dialog');
+        window.setTimeout(() => setLabel(null), 2400);
+      }}
+    >
+      {label ?? 'Export study (JSON)'}
+    </button>
+  );
+}
+
+/**
+ * Export the study as JSON, reporting which route actually worked.
+ *
+ * The clipboard is tried first because it is the only route that reports success honestly. A
+ * script-initiated download is inert in a sandboxed embed but throws nothing, so it can never be
+ * confirmed — it is attempted only as a fallback, and a prompt backstops both.
+ */
+async function exportJson(study: unknown): Promise<'clipboard' | 'download' | 'prompt'> {
+  const text = JSON.stringify(study, null, 2);
+
+  try {
+    await navigator.clipboard.writeText(text);
+    return 'clipboard';
+  } catch {
+    // Clipboard needs a secure context and permission.
+  }
+
+  try {
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'spp-grounding-study.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return 'download';
+  } catch {
+    window.prompt('Copy the study JSON:', text);
+    return 'prompt';
+  }
 }

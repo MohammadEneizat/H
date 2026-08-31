@@ -26,8 +26,12 @@
   --radius: 8px;
 }
 
+/* Dark palette. Emitted three times so every theme state resolves:
+   - prefers-color-scheme, guarded so an explicit light choice still wins;
+   - an explicit dark choice, which wins over a light OS setting.
+   Components only ever read the tokens, never colors defined inside these blocks. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #12141a;
     --surface: #1a1d25;
     --surface-2: #21252e;
@@ -46,6 +50,26 @@
     --fail: #f4796b;
     --fail-soft: #2e1815;
   }
+}
+
+:root[data-theme="dark"] {
+  --bg: #12141a;
+  --surface: #1a1d25;
+  --surface-2: #21252e;
+  --border: #2c313c;
+  --border-strong: #3d4450;
+  --text: #e7eaef;
+  --text-dim: #a5aebd;
+  --text-faint: #78828f;
+
+  --accent: #6aa5f0;
+  --accent-soft: #1b2839;
+  --pass: #5fd394;
+  --pass-soft: #14291e;
+  --marginal: #e8bd54;
+  --marginal-soft: #2c2413;
+  --fail: #f4796b;
+  --fail-soft: #2e1815;
 }
 
 * { box-sizing: border-box; }
