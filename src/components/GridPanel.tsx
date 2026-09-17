@@ -1,6 +1,14 @@
 import { useStudy } from '../state/store';
 import { areaLabel, Callout, Card, CheckField, fmt, Grid, LengthField, NumberField, Ref, SelectField, Stat } from './ui';
-import { COPPER_SIZES, CONDUCTOR_MATERIALS, gridGeometry } from '../engine';
+import {
+  CONDUCTOR_MATERIALS,
+  CONDUCTOR_SIZES,
+  COPPER_SIZES,
+  FLAT_SIZES,
+  flatStripEquivalentDiameter,
+  getMaterial,
+  gridGeometry,
+} from '../engine';
 import { GridPlan } from './GridPlan';
 
 export function GridPanel() {
@@ -8,6 +16,14 @@ export function GridPanel() {
   const g = study.grid;
   const a = study.auxiliary;
   const geom = gridGeometry(g);
+  // Area alone is ambiguous once flat sections are in the catalogue (40 x 4 mm galvanised steel and
+  // 40 x 4 mm copper tape share 160 mm²), so match on section, diameter and material together.
+  const selectedSize = CONDUCTOR_SIZES.find(
+    (s) =>
+      Math.abs(s.areaMm2 - g.conductorAreaMm2) < 0.5 &&
+      Math.abs(s.diameterM - g.conductorDiameterM) < 1e-4 &&
+      s.materialId === g.materialId,
+  );
 
   const setGrid = (p: Partial<typeof g>) => patch({ grid: { ...g, ...p } });
   const setAux = (p: Partial<typeof a>) => patch({ auxiliary: { ...a, ...p } });
@@ -38,15 +54,26 @@ export function GridPanel() {
           <LengthField label="Burial depth h" meters={g.depth} units={study.units} onChange={(v) => setGrid({ depth: v })} />
           <SelectField
             label="Conductor size"
-            value={COPPER_SIZES.find((s) => Math.abs(s.areaMm2 - g.conductorAreaMm2) < 0.5)?.id ?? 'custom'}
+            value={selectedSize?.id ?? 'custom'}
             onChange={(id) => {
-              const s = COPPER_SIZES.find((x) => x.id === id);
-              if (s) setGrid({ conductorAreaMm2: s.areaMm2, conductorDiameterM: s.diameterM });
+              const s = CONDUCTOR_SIZES.find((x) => x.id === id);
+              if (s) {
+                setGrid({
+                  conductorAreaMm2: s.areaMm2,
+                  conductorDiameterM: s.diameterM,
+                  materialId: s.materialId,
+                });
+              }
             }}
             options={[
-              ...COPPER_SIZES.map((s) => ({ value: s.id, label: `${s.awg} — ${s.areaMm2} mm²` })),
+              ...COPPER_SIZES.map((s) => ({ value: s.id, label: `Round — ${s.label} (${s.areaMm2} mm²)` })),
+              ...FLAT_SIZES.map((s) => ({
+                value: s.id,
+                label: `Flat ${s.materialId === 'zn-steel-rod' ? 'galv. steel' : 'copper'} — ${s.label} (${s.areaMm2} mm²)`,
+              })),
               { value: 'custom', label: 'Custom (set area and diameter below)' },
             ]}
+            hint="Choosing a section also selects the material it is normally supplied in."
           />
           <SelectField
             label="Conductor material"
@@ -61,10 +88,15 @@ export function GridPanel() {
             onChange={(v) => setGrid({ conductorAreaMm2: v })}
           />
           <NumberField
-            label="Conductor diameter d"
+            label={selectedSize?.shape === 'flat' ? 'Equivalent diameter d' : 'Conductor diameter d'}
             value={g.conductorDiameterM * 1000}
             unit="mm"
             onChange={(v) => setGrid({ conductorDiameterM: v / 1000 })}
+            hint={
+              selectedSize?.shape === 'flat'
+                ? `(w + t)/2 for a ${selectedSize.label} strip`
+                : 'Overall diameter of the stranded conductor.'
+            }
           />
           <div />
         </Grid>
@@ -75,6 +107,8 @@ export function GridPanel() {
           <Stat label="Grid runs" value={`${geom.linesY} × ${geom.linesX}`} note="parallel to Y × parallel to X" />
           <Stat label="Perimeter Lp" value={fmt(geom.perimeter, 0)} unit="m" />
         </div>
+
+        {selectedSize?.shape === 'flat' && <FlatStripNote size={selectedSize} />}
 
         <GridPlan />
       </Card>
@@ -173,5 +207,46 @@ export function GridPanel() {
         )}
       </Card>
     </>
+  );
+}
+
+
+/**
+ * Explains what substituting a flat strip actually changes. The two effects pull in opposite
+ * directions, which is the part that is easy to get wrong when swapping copper for steel.
+ */
+function FlatStripNote({ size }: { size: (typeof CONDUCTOR_SIZES)[number] }) {
+  const material = getMaterial(size.materialId);
+  const copper = getMaterial('cu-annealed');
+  const dEq = flatStripEquivalentDiameter(size.widthMm ?? 0, size.thicknessMm ?? 0);
+  const reference = COPPER_SIZES.find((c) => c.id === '2/0')!;
+  const resistivityRatio = material.resistivityOhmM / copper.resistivityOhmM;
+
+  return (
+    <Callout kind="info" title={`${size.label} flat section — ${material.name.toLowerCase()}`}>
+      <p>
+        The IEEE Std 80 equations take the diameter of a round conductor, so the strip enters as an
+        equivalent diameter of <b>{fmt(dEq, 1)} mm</b> — (w + t)/2, which in the thin-strip limit is the
+        exact classical result. That is {fmt(dEq / (reference.diameterM * 1000), 1)}× the diameter of 2/0
+        copper, and a larger d <b>lowers</b> Km and therefore the mesh voltage.
+      </p>
+      {material.id !== 'cu-annealed' && (
+        <p>
+          Working the other way, this material's resistivity is <b>{fmt(resistivityRatio, 1)}×</b> that of
+          copper, so the longitudinal I·R drop along the run back to the main grid rises in proportion —
+          the effect <Ref>IEEE Std 2778-2020, 4.3 and 5.4.1</Ref> singles out. Check the touch voltage
+          including that drop on the Results tab, not the mesh voltage alone.
+        </p>
+      )}
+      {material.id === 'zn-steel-rod' && (
+        <p>
+          Thermal sizing uses Tm = {material.Tm} °C, the melting point of the zinc coating rather than of
+          the steel. That preserves the galvanising, and is the conservative basis for a buried conductor
+          whose corrosion protection matters. Pairing galvanised steel strip with galvanised steel array
+          posts also avoids the dissimilar-metal junction that <Ref>IEEE Std 2778-2020, 4.3</Ref> flags as
+          a galvanic corrosion concern where grounding conductor meets equipment frames.
+        </p>
+      )}
+    </Callout>
   );
 }

@@ -8,7 +8,8 @@ import {
 } from '../soil';
 import { tolerableVoltages } from '../safety';
 import { blockEquivalentRod, rodBedResistance, rodResistance, solveRodLengthForResistance } from '../auxiliary';
-import { conductorVoltageDrop } from '../conductor';
+import { conductorVoltageDrop, sizeConductor } from '../conductor';
+import { CONDUCTOR_SIZES, FLAT_SIZES, flatStripEquivalentDiameter, getMaterial } from '../materials';
 import { defaultStudy, makeRegion } from '../defaults';
 import { runStudy } from '../study';
 
@@ -323,5 +324,84 @@ describe('Full study', () => {
     const bonded = runStudy({ ...base, fence: { ...base.fence, bonded: true } });
     const isolated = runStudy({ ...base, fence: { ...base.fence, bonded: false } });
     expect(bonded.fence!.touchVoltage).toBeGreaterThan(isolated.fence!.touchVoltage);
+  });
+});
+
+describe('Flat strip conductors', () => {
+  it('gives 40 x 4 mm galvanised steel an equivalent diameter of 22 mm', () => {
+    expect(flatStripEquivalentDiameter(40, 4)).toBeCloseTo(22, 9);
+    const s = FLAT_SIZES.find((x) => x.id === 'gs-40x4')!;
+    expect(s.areaMm2).toBe(160);
+    expect(s.diameterM).toBeCloseTo(0.022, 9);
+    expect(s.materialId).toBe('zn-steel-rod');
+  });
+
+  it('reduces to the exact thin-strip result d = w/2 as thickness vanishes', () => {
+    expect(flatStripEquivalentDiameter(40, 0)).toBeCloseTo(20, 9);
+    expect(flatStripEquivalentDiameter(75, 0)).toBeCloseTo(37.5, 9);
+  });
+
+  it('increases with both width and thickness', () => {
+    expect(flatStripEquivalentDiameter(50, 4)).toBeGreaterThan(flatStripEquivalentDiameter(40, 4));
+    expect(flatStripEquivalentDiameter(40, 6)).toBeGreaterThan(flatStripEquivalentDiameter(40, 4));
+  });
+
+  it('keeps every catalogue section self-consistent', () => {
+    for (const s of CONDUCTOR_SIZES) {
+      expect(s.areaMm2).toBeGreaterThan(0);
+      expect(s.diameterM).toBeGreaterThan(0);
+      expect(() => getMaterial(s.materialId)).not.toThrow();
+      if (s.shape === 'flat') {
+        expect(s.areaMm2).toBeCloseTo(s.widthMm! * s.thicknessMm!, 9);
+        expect(s.diameterM * 1000).toBeCloseTo(flatStripEquivalentDiameter(s.widthMm!, s.thicknessMm!), 9);
+      }
+    }
+  });
+
+  it('identifies each catalogue section uniquely by area, diameter and material', () => {
+    // The Grid panel matches on this triple; 40 x 4 galvanised steel and 40 x 4 copper tape share an
+    // area, so a collision here would silently mislabel the user's selection.
+    const keys = CONDUCTOR_SIZES.map((s) => `${s.areaMm2}|${s.diameterM}|${s.materialId}`);
+    expect(new Set(keys).size).toBe(CONDUCTOR_SIZES.length);
+  });
+
+  it('lowers the mesh voltage relative to 2/0 copper, through the larger equivalent diameter', () => {
+    const base = defaultStudy();
+    const copper = runStudy({
+      ...base,
+      grid: { ...base.grid, conductorAreaMm2: 67.4, conductorDiameterM: 0.0105, materialId: 'cu-annealed' },
+    }).regions[0];
+    const strip = runStudy({
+      ...base,
+      grid: { ...base.grid, conductorAreaMm2: 160, conductorDiameterM: 0.022, materialId: 'zn-steel-rod' },
+    }).regions[0];
+    expect(strip.meshVoltage).toBeLessThan(copper.meshVoltage);
+  });
+
+  it('raises the longitudinal I-R drop, because galvanised steel is far more resistive', () => {
+    const base = defaultStudy();
+    const copper = runStudy({
+      ...base,
+      grid: { ...base.grid, conductorAreaMm2: 160, conductorDiameterM: 0.022, materialId: 'cu-annealed' },
+    }).regions[0];
+    const steel = runStudy({
+      ...base,
+      grid: { ...base.grid, conductorAreaMm2: 160, conductorDiameterM: 0.022, materialId: 'zn-steel-rod' },
+    }).regions[0];
+    // Same section, same geometry: the only difference is resistivity, ~11.7x copper.
+    expect(steel.auxDropResistance / copper.auxDropResistance).toBeGreaterThan(10);
+    expect(steel.auxDrop).toBeGreaterThan(copper.auxDrop);
+  });
+
+  it('sizes galvanised steel far larger than copper for the same duty', () => {
+    const cu = sizeConductor(12_000, 0.5, 'cu-annealed', 40);
+    const gs = sizeConductor(12_000, 0.5, 'zn-steel-rod', 40);
+    // Table 2 Kf: 28.96 for galvanised steel against 7.00 for annealed copper.
+    expect(gs.areaMm2 / cu.areaMm2).toBeCloseTo(28.96 / 7.0, 1);
+  });
+
+  it('limits galvanised steel to the zinc melting point, not the steel fusing point', () => {
+    const r = sizeConductor(10_000, 0.5, 'zn-steel-rod', 40, 1500);
+    expect(r.maxTemp).toBe(419);
   });
 });

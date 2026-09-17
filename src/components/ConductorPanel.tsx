@@ -1,6 +1,6 @@
 import { useStudy } from '../state/store';
 import { Callout, Card, fmt, Grid, NumberField, Ref, SelectField, Stat } from './ui';
-import { CONDUCTOR_MATERIALS, COPPER_SIZES, getMaterial, sizeConductor } from '../engine';
+import { CONDUCTOR_MATERIALS, CONDUCTOR_SIZES, getMaterial, sizeConductor } from '../engine';
 
 export function ConductorPanel() {
   const { study, patch, result } = useStudy();
@@ -12,8 +12,14 @@ export function ConductorPanel() {
   const selected = study.grid.conductorAreaMm2;
   const adequate = selected >= required.areaMm2;
 
-  // Smallest catalogue size that satisfies the thermal requirement.
-  const recommended = COPPER_SIZES.find((x) => x.areaMm2 >= required.areaMm2);
+  // Smallest catalogue section in the same material that satisfies the thermal requirement. Matching
+  // the material matters now that flat galvanised steel is offered: recommending a copper size for a
+  // steel design would understate the section badly, since steel needs far more of it.
+  const inMaterial = CONDUCTOR_SIZES.filter((x) => x.materialId === study.grid.materialId).sort(
+    (a, b) => a.areaMm2 - b.areaMm2,
+  );
+  const pool = inMaterial.length > 0 ? inMaterial : CONDUCTOR_SIZES;
+  const recommended = pool.find((x) => x.areaMm2 >= required.areaMm2);
 
   return (
     <>
@@ -63,7 +69,7 @@ export function ConductorPanel() {
           <Callout kind="warn" title="Increase the conductor size">
             The grid conductor selected on the Grid tab ({fmt(selected, 1)} mm²) is below the {fmt(required.areaMm2, 1)}{' '}
             mm² required for {fmt(result.sizingGoverningCurrent, 0)} A over {s.duration} s. The smallest catalogue size
-            that satisfies it is <b>{recommended.awg}</b> ({recommended.areaMm2} mm²).
+            in this material that satisfies it is <b>{recommended.label}</b> ({recommended.areaMm2} mm²).
           </Callout>
         )}
 

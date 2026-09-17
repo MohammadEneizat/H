@@ -48,7 +48,7 @@ export const CONDUCTOR_MATERIALS: ConductorMaterial[] = [
   mat('acs', 'Aluminum-clad steel wire', 20.3, 0.0036, 258, 657, 8.48, 3.58),
   mat('steel-1020', 'Steel, 1020', 10.8, 0.0016, 605, 1510, 15.9, 3.28),
   mat('ss-clad-rod', 'Stainless-clad steel rod', 9.8, 0.0016, 605, 1400, 17.5, 4.44),
-  mat('zn-steel-rod', 'Zinc-coated steel rod', 8.6, 0.0032, 293, 419, 20.1, 3.93),
+  mat('zn-steel-rod', 'Galvanised (zinc-coated) steel', 8.6, 0.0032, 293, 419, 20.1, 3.93),
   mat('ss-304', 'Stainless steel 304', 2.4, 0.0013, 749, 1400, 72.0, 4.03),
 ];
 
@@ -93,24 +93,105 @@ export const FOOTWEAR_PRESETS = [
   { id: 'ehv-rated', name: 'Electrical-hazard rated footwear (custom)', ohms: 0 },
 ];
 
-/** Bare stranded copper conductor sizes commonly used for grounding grids. */
-export interface ConductorSize {
-  id: string;
-  awg: string;
-  areaMm2: number;
-  /** Overall diameter of the stranded conductor, m. */
-  diameterM: number;
+/**
+ * Equivalent diameter of a rectangular (flat strip / tape) conductor, mm.
+ *
+ * The IEEE Std 80 mesh and step equations take `d`, the diameter of a round conductor. A flat strip
+ * is handled by substituting the diameter of the round conductor that presents the same external
+ * field. For a strip of width w and thickness t that equivalent radius is (w + t)/4, so
+ *
+ *   d_eq = (w + t)/2
+ *
+ * In the thin-strip limit this reduces to d_eq = w/2, the exact classical result (the logarithmic
+ * capacity of a zero-thickness strip of width w is w/4). The consequence is worth noting: a 40 × 4 mm
+ * strip behaves like a 22 mm round conductor, more than twice the diameter of 2/0 copper, which
+ * lowers Km and therefore the mesh voltage.
+ */
+export function flatStripEquivalentDiameter(widthMm: number, thicknessMm: number): number {
+  return (Math.max(widthMm, 0) + Math.max(thicknessMm, 0)) / 2;
 }
 
+export type ConductorShape = 'round' | 'flat';
+
+/** A catalogue entry for a grounding conductor. */
+export interface ConductorSize {
+  id: string;
+  /** Display designation, e.g. "2/0 AWG" or "40 x 4 mm". */
+  label: string;
+  shape: ConductorShape;
+  areaMm2: number;
+  /**
+   * Diameter used by the IEEE Std 80 equations, m. For a round conductor this is the physical
+   * overall diameter; for a flat strip it is the equivalent diameter above.
+   */
+  diameterM: number;
+  /** Strip width, mm. Flat sections only. */
+  widthMm?: number;
+  /** Strip thickness, mm. Flat sections only. */
+  thicknessMm?: number;
+  /** Material this section is normally supplied in, preselected when the size is chosen. */
+  materialId: string;
+  /** Short note on where the section is customary. */
+  note?: string;
+}
+
+function flat(
+  id: string,
+  widthMm: number,
+  thicknessMm: number,
+  materialId: string,
+  note?: string,
+): ConductorSize {
+  return {
+    id,
+    label: `${widthMm} x ${thicknessMm} mm`,
+    shape: 'flat',
+    areaMm2: widthMm * thicknessMm,
+    diameterM: flatStripEquivalentDiameter(widthMm, thicknessMm) / 1000,
+    widthMm,
+    thicknessMm,
+    materialId,
+    note,
+  };
+}
+
+function round(id: string, label: string, areaMm2: number, diameterM: number): ConductorSize {
+  return { id, label, shape: 'round', areaMm2, diameterM, materialId: 'cu-annealed' };
+}
+
+/** Bare stranded copper conductor sizes, the customary choice in IEEE/NEC practice. */
 export const COPPER_SIZES: ConductorSize[] = [
-  { id: '8', awg: '8 AWG', areaMm2: 8.37, diameterM: 0.00329 },
-  { id: '6', awg: '6 AWG', areaMm2: 13.3, diameterM: 0.00417 },
-  { id: '4', awg: '4 AWG', areaMm2: 21.2, diameterM: 0.00589 },
-  { id: '2', awg: '2 AWG', areaMm2: 33.6, diameterM: 0.00742 },
-  { id: '1/0', awg: '1/0 AWG', areaMm2: 53.5, diameterM: 0.00935 },
-  { id: '2/0', awg: '2/0 AWG', areaMm2: 67.4, diameterM: 0.0105 },
-  { id: '4/0', awg: '4/0 AWG', areaMm2: 107.2, diameterM: 0.0132 },
-  { id: '250', awg: '250 kcmil', areaMm2: 126.7, diameterM: 0.0144 },
-  { id: '350', awg: '350 kcmil', areaMm2: 177.3, diameterM: 0.017 },
-  { id: '500', awg: '500 kcmil', areaMm2: 253.4, diameterM: 0.0203 },
+  round('8', '8 AWG', 8.37, 0.00329),
+  round('6', '6 AWG', 13.3, 0.00417),
+  round('4', '4 AWG', 21.2, 0.00589),
+  round('2', '2 AWG', 33.6, 0.00742),
+  round('1/0', '1/0 AWG', 53.5, 0.00935),
+  round('2/0', '2/0 AWG', 67.4, 0.0105),
+  round('4/0', '4/0 AWG', 107.2, 0.0132),
+  round('250', '250 kcmil', 126.7, 0.0144),
+  round('350', '350 kcmil', 177.3, 0.017),
+  round('500', '500 kcmil', 253.4, 0.0203),
 ];
+
+/**
+ * Flat strip (tape) sections. Galvanised steel strip is the customary earthing conductor in IEC
+ * practice and is widely used on solar plants, where it also avoids the copper-to-galvanised-steel
+ * junction that IEEE Std 2778-2020, 4.3 flags as a galvanic corrosion concern where grounding
+ * conductor meets equipment frames.
+ */
+export const FLAT_SIZES: ConductorSize[] = [
+  flat('gs-25x3', 25, 3, 'zn-steel-rod', 'Light duty'),
+  flat('gs-30x3', 30, 3, 'zn-steel-rod'),
+  flat('gs-25x6', 25, 6, 'zn-steel-rod'),
+  flat('gs-40x4', 40, 4, 'zn-steel-rod', 'Common main earthing strip'),
+  flat('gs-40x6', 40, 6, 'zn-steel-rod'),
+  flat('gs-50x6', 50, 6, 'zn-steel-rod'),
+  flat('gs-50x8', 50, 8, 'zn-steel-rod'),
+  flat('gs-65x8', 65, 8, 'zn-steel-rod'),
+  flat('gs-75x8', 75, 8, 'zn-steel-rod', 'Heavy duty / high fault duty'),
+  flat('cu-25x3', 25, 3, 'cu-annealed', 'Copper tape'),
+  flat('cu-40x4', 40, 4, 'cu-annealed', 'Copper tape'),
+];
+
+/** Every catalogue section, round and flat. */
+export const CONDUCTOR_SIZES: ConductorSize[] = [...COPPER_SIZES, ...FLAT_SIZES];
