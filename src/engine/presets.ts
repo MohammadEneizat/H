@@ -117,6 +117,8 @@ export const DEFAULT_INSTALLATION: InstallationSpec = {
   criticalTemp_C: 50,
   dryRho: 2.5,
   duct: { material: 'PE', innerD_mm: 100, outerD_mm: 110, rho: null, U: null, V: null, Y: null },
-  bank: { width_m: 0.6, height_m: 0.5, concreteRho: 1.0 },
+  bank: { width_m: 0.6, height_m: 0.5, concreteRho: 1.0, centreX_m: null, centreDepth_m: null },
+  circuits: [],
+  ratingMode: 'own-limit',
   air: { arrangement: 'trefoil', solar: false, H: 1000, absorption: null },
 };

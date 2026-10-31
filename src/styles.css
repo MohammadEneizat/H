@@ -1050,6 +1050,29 @@ textarea {
   font-weight: 500;
   color: var(--ink-2);
 }
+.circuits-table {
+  width: 100%;
+}
+.circuits-table th,
+.circuits-table td.text {
+  text-align: left;
+}
+.circuits-table th.num,
+.circuits-table td.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.circuits-table tbody th {
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.circuits-table td.text {
+  color: var(--ink-2);
+}
+.muted {
+  color: var(--ink-3);
+}
 
 /* ---------- Calculation sheet ---------- */
 .calc-grid {

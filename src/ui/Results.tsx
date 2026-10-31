@@ -68,6 +68,7 @@ export function Results({ cable, inst, result: r }: Props) {
       ? AIR_CONSTANTS[inst.air.arrangement].label
       : `${inst.formation === 'trefoil' ? 'Trefoil' : 'Flat'}, ${inst.touching ? 'touching' : `${fmt(inst.spacing_mm, 0)} mm`}`,
     bondLabel[inst.bonding],
+    ...(r.system ? [`${r.system.circuits.length} circuits`] : []),
     inst.type === 'air' ? `${fmt(inst.ambient_C, 0)} °C air` : `${fmt(inst.depth_m, 2)} m · ${fmt(inst.soilRho, 2)} K·m/W · ${fmt(inst.ambient_C, 0)} °C`,
   ];
 
@@ -157,6 +158,9 @@ export function Results({ cable, inst, result: r }: Props) {
     inst.type === 'air' ? '2-1 2.2.1' : '2-1 2.2.3',
   ]);
 
+  if (r.system && t4.mutual !== undefined)
+    thermalRows.push(['Rise from other circuits at this cable', 'Δθp', fmt(t4.mutual, 2), 'K', '2-1 2.2.3.1']);
+
   const lossRows: Row[] = [
     ['Conductor loss I²R', 'Wc', sig(r.losses.Wc, 4), 'W/m', '1.4'],
     ['Screen loss λ1·Wc', 'Ws', sig(r.losses.Ws, 4), 'W/m', '1.4'],
@@ -178,7 +182,7 @@ export function Results({ cable, inst, result: r }: Props) {
     <div className="results">
       <section className="card summary" aria-live="polite">
         <div className="summary-main">
-          <p className="eyebrow">Permissible current per phase</p>
+          <p className="eyebrow">{r.system ? 'Main circuit C1 · permissible current per phase' : 'Permissible current per phase'}</p>
           <p className="hero-figure">
             {amps(r.I)}
             <span className="hero-unit">A</span>
@@ -211,10 +215,11 @@ export function Results({ cable, inst, result: r }: Props) {
           <div className="load-check">
             <NumField
               id="load-current"
-              label="Check a load current"
+              label={r.system ? 'Check a main-circuit current' : 'Check a load current'}
               unit="A"
               value={loadI}
               onChange={(v) => setLoad(v)}
+              hint={r.system ? 'Other circuits carry their rating or their set load.' : undefined}
             />
             {temp && temp.ok && (
               <p className={`load-result ${over ? 'is-over' : 'is-ok'}`}>
@@ -228,6 +233,70 @@ export function Results({ cable, inst, result: r }: Props) {
           </div>
         </div>
       </section>
+
+      {r.system && (
+        <section className="card" aria-labelledby="circuits-title">
+          <header className="card-head">
+            <div>
+              <h2 id="circuits-title">All circuits</h2>
+              <p className="card-sub">
+                {r.system.mode === 'equal-current'
+                  ? 'Rated circuits carry the same current, limited by the hottest one.'
+                  : 'Each rated circuit is loaded to its own temperature limit.'}{' '}
+                Fixed circuits carry their set load.
+              </p>
+            </div>
+          </header>
+          <div className="table-scroll">
+            <table className="data-table circuits-table">
+              <thead>
+                <tr>
+                  <th scope="col">Circuit</th>
+                  <th scope="col">Cable</th>
+                  <th scope="col">Load</th>
+                  <th scope="col" className="num">
+                    Current
+                  </th>
+                  <th scope="col" className="num">
+                    Hottest conductor
+                  </th>
+                  <th scope="col" className="num">
+                    Heat per cable
+                  </th>
+                  <th scope="col" className="num">
+                    From other circuits
+                  </th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r.system.circuits.map((c) => {
+                  const atLimit = Math.abs(c.hottestTemp - c.maxTemp) < 0.05;
+                  const overLimit = !atLimit && c.hottestTemp > c.maxTemp;
+                  return (
+                    <tr key={c.name}>
+                      <th scope="row">{c.name}</th>
+                      <td className="text">{c.cableName.replace(/^Example: /, '')}</td>
+                      <td className="text">{c.load === 'rated' ? 'Rated' : 'Fixed'}</td>
+                      <td className="num">{amps(c.I)} A</td>
+                      <td className="num">
+                        {fmt(c.hottestTemp, 1)} °C <span className="muted">/ {fmt(c.maxTemp, 0)}</span>
+                      </td>
+                      <td className="num">{fmt(c.W, 1)} W/m</td>
+                      <td className="num">+{fmt(c.mutualRise, 1)} K</td>
+                      <td className="text">
+                        <span className={`pill ${overLimit ? 'pill-bad' : atLimit ? 'pill-note' : 'pill-ok'}`}>
+                          {overLimit ? 'Over limit' : atLimit ? 'At limit' : 'Within limit'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {(r.warnings.length > 0 || r.notes.length > 0) && (
         <section className="card issues" aria-label="Warnings and assumptions">

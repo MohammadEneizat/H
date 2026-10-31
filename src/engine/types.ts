@@ -72,11 +72,38 @@ export interface CableSpec {
 }
 
 export type InstallationType = 'direct' | 'ducts' | 'ductbank' | 'air';
+export type LoadMode = 'rated' | 'fixed';
+/** How the rated circuits share the thermal limit when there is more than one circuit. */
+export type RatingMode = 'own-limit' | 'equal-current';
 export type Formation = 'trefoil' | 'flat';
 export type Bonding = 'both' | 'single' | 'cross';
 export type SoilModel = 'moist' | 'two-zone' | 'avoid-drying';
 
-/** One three-phase circuit of single-core cables. Depths in m, spacings in mm. */
+/**
+ * A further three-phase circuit in the same installation (buried installations only).
+ * It shares the soil, ambient temperature, ducts and duct bank of the main circuit.
+ */
+export interface CircuitSpec {
+  id: string;
+  name: string;
+  /** Cable of this circuit; null means the same cable as the main circuit */
+  cable: CableSpec | null;
+  /** Horizontal position of the circuit centre, relative to the main circuit (m) */
+  x_m: number;
+  /** Depth of the circuit centre (m) */
+  depth_m: number;
+  formation: Formation;
+  touching: boolean;
+  spacing_mm: number;
+  transposed: boolean;
+  bonding: Bonding;
+  crossBondLambda1?: Override;
+  /** 'rated': the circuit is rated together with the main circuit; 'fixed': it carries current_A */
+  load: LoadMode;
+  current_A: number;
+}
+
+/** The installation and the main three-phase circuit of single-core cables. Depths in m, spacings in mm. */
 export interface InstallationSpec {
   type: InstallationType;
   frequency_Hz: number;
@@ -115,7 +142,16 @@ export interface InstallationSpec {
     width_m: number;
     height_m: number;
     concreteRho: number;
+    /** Horizontal position of the bank centre relative to the main circuit (m); default 0 */
+    centreX_m?: Override;
+    /** Depth of the bank centre (m); default: depth of the main circuit */
+    centreDepth_m?: Override;
   };
+  /** Other circuits in the same installation (not used in free air) */
+  circuits: CircuitSpec[];
+  ratingMode: RatingMode;
+  /** Horizontal position of this circuit's centre (m); 0 for the main circuit */
+  circuitX_m?: number;
   air: {
     arrangement: AirArrangement;
     solar: boolean;
@@ -203,6 +239,8 @@ export interface T4Breakdown {
   T4ppp?: number;
   /** Duct-bank correction for the soil / concrete difference */
   bankCorrection?: number;
+  /** Temperature rise from other circuits at the governing cable (K) */
+  mutual?: number;
   /** Mean temperature of the medium inside the duct (°C) */
   thetaM?: number;
   /** Air: heat dissipation coefficient and surface temperature rise */
@@ -210,6 +248,32 @@ export interface T4Breakdown {
   dThetaS?: number;
   method: string;
   hottest: number;
+}
+
+export interface CircuitResult {
+  name: string;
+  cableName: string;
+  load: LoadMode;
+  /** Current carried (A): the rating for rated circuits, the entered load for fixed ones */
+  I: number;
+  maxTemp: number;
+  /** Conductor temperature of the hottest cable of the circuit (°C) */
+  hottestTemp: number;
+  /** Heat per cable (W/m) */
+  W: number;
+  /** Temperature rise at the hottest cable caused by the other circuits (K) */
+  mutualRise: number;
+  positions: { x: number; y: number }[];
+  /** Cable and duct outer diameters (mm) */
+  De: number;
+  ductD?: number;
+  dc: number;
+  hottest: number;
+}
+
+export interface SystemResult {
+  mode: RatingMode;
+  circuits: CircuitResult[];
 }
 
 export interface RatingResult {
@@ -237,6 +301,8 @@ export interface RatingResult {
   spacing_mm: number;
   positions: { x: number; y: number }[];
   iterations: number;
+  /** Present when the installation has more than one circuit; circuits[0] is the main circuit */
+  system?: SystemResult;
 }
 
 export interface TemperatureResult {

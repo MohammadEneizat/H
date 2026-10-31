@@ -3,9 +3,9 @@
 A web app that calculates the continuous current rating (ampacity) of power cables to
 **IEC 60287**, from the values on a cable manufacturer's datasheet.
 
-Phase 1 covers one three-phase circuit of **single-core cables without armour**: the usual
-MV and HV XLPE land cable with a copper wire screen, a lead or aluminium sheath, or a
-corrugated sheath.
+It covers three-phase circuits of **single-core cables without armour**: the usual MV and
+HV XLPE land cable with a copper wire screen, a lead or aluminium sheath, or a corrugated
+sheath. Several circuits can share a trench, ducts or a duct bank, each with its own cable.
 
 ## Run it
 
@@ -41,6 +41,28 @@ temperature for any load current, with every property at its actual temperature.
 For flat formation the three cables have different loss factors. The app uses the largest
 one together with T4 of the hottest position, which is conservative.
 
+## Several circuits
+
+The **Circuits** tab adds further circuits around the main circuit C1. Each has its own
+cable, position, depth, formation, bonding and load. Cables in free air are always
+calculated as a single circuit.
+
+- **Heating between circuits** follows IEC 60287-2-1 2.2.3.1. Every cable dissipating
+  W W/m raises the temperature of a cable p in another circuit by
+  ρ/2π · W · ln(d′pk/dpk), where d′pk is the distance to the image of cable k above
+  the ground. That rise is taken off cable p's permissible temperature rise, and the
+  circuit's rating is the lowest of its three cables. Within each circuit the cables are
+  handled as above, so a single circuit gives the same answer as before.
+- **Duct bank**: the soil/concrete correction is applied with the total heat of all
+  cables in the bank (the N·W term of 2.2.7.3, generalised to unequal loads).
+- **Rated circuits** are either each loaded to their own temperature limit, or all carry
+  one current set by the first to reach its limit.
+- **Fixed circuits** carry a load you enter, and their temperature is calculated with
+  every property at its actual temperature. A fixed circuit that runs above its limit is
+  flagged.
+- Soil drying-out models are only defined for a single circuit, so moist soil is used
+  when there are several.
+
 ## Entering a datasheet
 
 - **Conductor**: diameter, maximum DC resistance at 20 °C, construction. If the datasheet
@@ -60,6 +82,7 @@ one together with T4 of the hottest position, which is conservative.
 - each loss and thermal-resistance formula against an independent evaluation of the
   standard's equation;
 - a full step-by-step hand calculation of one case;
+- a two-circuit case against superposition summed by hand over all six cables;
 - that the rated current gives exactly the maximum conductor temperature in the forward
   calculation, for every installation type, which compares two independent code paths;
 - that the rating moves the right way with depth, soil resistivity, ambient temperature and
@@ -73,7 +96,8 @@ be confirmed against your copy of IEC 60287-2-1.
 ## Not covered yet
 
 - Three-core cables, armour (λ2, T2), pipe-type cables
-- More than one circuit, and other heat sources
+- Other heat sources (district heating pipes, etc.)
+- Different duct sizes per circuit, and several cables in one duct
 - Cyclic and emergency ratings (IEC 60853)
 - Finite-element calculation for non-standard geometries
 - Exporting the report as PDF (the browser's print works when the app runs locally)

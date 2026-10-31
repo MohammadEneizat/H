@@ -52,13 +52,56 @@ export function circuitPositions(formation: Formation, s: number, depth: number)
 }
 
 /**
- * External thermal resistance of the hottest of three equally loaded cables or ducts
- * — IEC 60287-2-1 2.2.3.
+ * External thermal resistance of each of three equally loaded cables or ducts of one
+ * circuit, including the heating of the circuit's other two cables — IEC 60287-2-1 2.2.3.
  *
- * Touching trefoil and touching flat groups use the closed formulas of 2.2.3.2.
- * Spaced groups use superposition with image sources (Kennelly), which for flat
- * formation reduces to ρ/2π · ln{(u + √(u² − 1))·[1 + (2L/s1)²]}.
+ * Touching trefoil and touching flat groups use the closed formulas of 2.2.3.2 (the same
+ * value is applied to all three positions). Spaced groups use superposition with image
+ * sources (Kennelly), which for flat formation reduces to
+ * ρ/2π · ln{(u + √(u² − 1))·[1 + (2L/s1)²]} for the centre cable.
  */
+export function groupT4PerCable(
+  rho: number,
+  D: number,
+  positions: Point[],
+  formation: Formation,
+  touching: boolean,
+  centreDepth: number,
+): { T4: number[]; hottest: number; method: string } {
+  if (touching) {
+    const u = (2 * centreDepth) / D;
+    const value =
+      formation === 'trefoil'
+        ? (1.5 / Math.PI) * rho * (Math.log(2 * u) - 0.63)
+        : rho * (0.475 * Math.log(2 * u) - 0.346);
+    return {
+      T4: [value, value, value],
+      hottest: 1,
+      method:
+        formation === 'trefoil'
+          ? 'Trefoil, touching: T4 = 1.5/π·ρ·[ln(2u) − 0.630]'
+          : 'Flat, touching (centre cable): T4 = ρ·[0.475·ln(2u) − 0.346]',
+    };
+  }
+  const T4 = positions.map((p, i) => {
+    let sum = acoshTerm((2 * p.y) / D);
+    positions.forEach((q, k) => {
+      if (k !== i) sum += Math.log(imageRatio(p, q));
+    });
+    return (rho / TWO_PI) * sum;
+  });
+  let hottest = 0;
+  T4.forEach((v, i) => {
+    if (v > T4[hottest]) hottest = i;
+  });
+  return {
+    T4,
+    hottest,
+    method: 'Spaced group, superposition: T4 = ρ/2π·ln{(u + √(u² − 1))·Π(d′pk/dpk)}',
+  };
+}
+
+/** External thermal resistance of the hottest of three equally loaded cables or ducts. */
 export function groupT4(
   rho: number,
   D: number,
@@ -67,42 +110,21 @@ export function groupT4(
   touching: boolean,
   centreDepth: number,
 ): { T4: number; hottest: number; method: string } {
-  if (touching) {
-    const u = (2 * centreDepth) / D;
-    if (formation === 'trefoil') {
-      return {
-        T4: (1.5 / Math.PI) * rho * (Math.log(2 * u) - 0.63),
-        hottest: 1,
-        method: 'Trefoil, touching: T4 = 1.5/π·ρ·[ln(2u) − 0.630]',
-      };
-    }
-    return {
-      T4: rho * (0.475 * Math.log(2 * u) - 0.346),
-      hottest: 1,
-      method: 'Flat, touching (centre cable): T4 = ρ·[0.475·ln(2u) − 0.346]',
-    };
-  }
-  let best = -Infinity;
-  let hottest = 0;
-  positions.forEach((p, i) => {
-    let sum = acoshTerm((2 * p.y) / D);
-    positions.forEach((q, k) => {
-      if (k === i) return;
-      const dpk = Math.hypot(p.x - q.x, p.y - q.y);
-      const dpkImage = Math.hypot(p.x - q.x, p.y + q.y);
-      sum += Math.log(dpkImage / dpk);
-    });
-    const T4 = (rho / TWO_PI) * sum;
-    if (T4 > best) {
-      best = T4;
-      hottest = i;
-    }
-  });
-  return {
-    T4: best,
-    hottest,
-    method: 'Spaced group, superposition: T4 = ρ/2π·ln{(u + √(u² − 1))·Π(d′pk/dpk)}',
-  };
+  const g = groupT4PerCable(rho, D, positions, formation, touching, centreDepth);
+  return { T4: g.T4[g.hottest], hottest: g.hottest, method: g.method };
+}
+
+/** d′pk / dpk: distance from p to the image of k above the ground surface, over the distance p–k. */
+export function imageRatio(p: Point, q: Point): number {
+  return Math.hypot(p.x - q.x, p.y + q.y) / Math.hypot(p.x - q.x, p.y - q.y);
+}
+
+/**
+ * Temperature rise at cable p per W/m dissipated in cable k of another circuit:
+ * Δθkp / Wk = ρ/2π · ln(d′pk/dpk) — IEC 60287-2-1 2.2.3.1.
+ */
+export function mutualHeatingFactor(rho: number, p: Point, q: Point): number {
+  return (rho / TWO_PI) * Math.log(imageRatio(p, q));
 }
 
 /** Air space between cable and duct: T4' = U / [1 + 0.1(V + Y·θm)·De], De in mm */

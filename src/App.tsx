@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { calculateRating, type CableSpec, type InstallationSpec } from './engine';
+import { calculateRating, type CableSpec, type CircuitSpec, type InstallationSpec } from './engine';
 import { DEFAULT_INSTALLATION, EXAMPLE_CABLES } from './engine/presets';
 import { CableForm } from './ui/CableForm';
+import { CircuitsForm } from './ui/CircuitsForm';
 import { InstallationForm } from './ui/InstallationForm';
 import { Results } from './ui/Results';
 import { amps } from './ui/format';
 
-type Tab = 'cable' | 'installation' | 'library';
+type Tab = 'cable' | 'installation' | 'circuits' | 'library';
 
 const STORE_KEY = 'ampacity-workbench.v1';
 const framed = (() => {
@@ -32,6 +33,24 @@ function normalizeCable(c: Partial<CableSpec> | undefined): CableSpec {
   };
 }
 
+function normalizeCircuit(c: Partial<CircuitSpec>, i: number): CircuitSpec {
+  return {
+    id: typeof c.id === 'string' ? c.id : `c${i}-${Math.random().toString(36).slice(2, 8)}`,
+    name: typeof c.name === 'string' ? c.name : `C${i + 2}`,
+    cable: c.cable ? normalizeCable(c.cable) : null,
+    x_m: typeof c.x_m === 'number' ? c.x_m : 0.5 * (i + 1),
+    depth_m: typeof c.depth_m === 'number' ? c.depth_m : DEFAULT_INSTALLATION.depth_m,
+    formation: c.formation === 'flat' ? 'flat' : 'trefoil',
+    touching: c.touching ?? true,
+    spacing_mm: typeof c.spacing_mm === 'number' ? c.spacing_mm : 100,
+    transposed: !!c.transposed,
+    bonding: c.bonding === 'single' || c.bonding === 'cross' ? c.bonding : 'both',
+    crossBondLambda1: c.crossBondLambda1 ?? null,
+    load: c.load === 'fixed' ? 'fixed' : 'rated',
+    current_A: typeof c.current_A === 'number' ? c.current_A : 0,
+  };
+}
+
 function normalizeInst(i: Partial<InstallationSpec> | undefined): InstallationSpec {
   const base = clone(DEFAULT_INSTALLATION);
   if (!i || typeof i !== 'object') return base;
@@ -41,6 +60,8 @@ function normalizeInst(i: Partial<InstallationSpec> | undefined): InstallationSp
     duct: { ...base.duct, ...(i.duct ?? {}) },
     bank: { ...base.bank, ...(i.bank ?? {}) },
     air: { ...base.air, ...(i.air ?? {}) },
+    ratingMode: i.ratingMode === 'equal-current' ? 'equal-current' : 'own-limit',
+    circuits: Array.isArray(i.circuits) ? i.circuits.map(normalizeCircuit) : [],
   };
 }
 
@@ -167,8 +188,9 @@ export function App() {
           <div className="tabs" role="tablist" aria-label="Input sections">
             {(
               [
-                ['cable', 'Cable datasheet'],
+                ['cable', 'Cable'],
                 ['installation', 'Installation'],
+                ['circuits', inst.circuits.length ? `Circuits (${inst.circuits.length + 1})` : 'Circuits'],
                 ['library', 'Library'],
               ] as [Tab, string][]
             ).map(([k, label]) => (
@@ -189,6 +211,7 @@ export function App() {
           <div className="tab-panel" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
             {tab === 'cable' && <CableForm cable={cable} onChange={setCable} />}
             {tab === 'installation' && <InstallationForm inst={inst} cable={cable} onChange={setInst} />}
+            {tab === 'circuits' && <CircuitsForm inst={inst} cable={cable} library={library} onChange={setInst} />}
             {tab === 'library' && (
               <div className="form library">
                 <section className="form-section">
@@ -328,8 +351,8 @@ export function App() {
         <main className="output" id="results" aria-label="Results">
           <Results cable={cable} inst={inst} result={result} />
           <footer className="foot">
-            Steady-state rating to IEC 60287-1-1 and IEC 60287-2-1, one circuit of three single-core cables without
-            armour. Check the result against your copy of the standard and the manufacturer’s data before relying on
+            Steady-state rating to IEC 60287-1-1 and IEC 60287-2-1 for circuits of three single-core cables without
+            armour, with heating between circuits by superposition. Check the result against your copy of the standard and the manufacturer’s data before relying on
             it.
           </footer>
         </main>

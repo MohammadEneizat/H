@@ -3,7 +3,7 @@ import { calculateRating, calculateTemperature, deriveGeometry, sweepRating } fr
 import { conductorAC, eddyCoefficients, sheathLossFactors, skinEffectFactor } from '../src/engine/losses';
 import { DEFAULT_INSTALLATION, EXAMPLE_CABLES } from '../src/engine/presets';
 import { buriedIsolatedT4, circuitPositions, ductBankRadius, groupT4 } from '../src/engine/thermal';
-import type { CableSpec, InstallationSpec } from '../src/engine/types';
+import type { CableSpec, CircuitSpec, InstallationSpec } from '../src/engine/types';
 
 const MV = EXAMPLE_CABLES[0];
 const HV = EXAMPLE_CABLES[1];
@@ -289,5 +289,101 @@ describe('rating (IEC 60287-1-1 1.4)', () => {
     expect(
       calculateRating(MV, inst({ type: 'ductbank', bank: { width_m: 0.2, height_m: 0.2, concreteRho: 1 } })).ok,
     ).toBe(false);
+  });
+});
+
+describe('several circuits (IEC 60287-2-1 2.2.3.1)', () => {
+  const other = (patch: Partial<CircuitSpec> = {}): CircuitSpec => ({
+    id: 'c2',
+    name: 'C2',
+    cable: null,
+    x_m: 0.5,
+    depth_m: 0.8,
+    formation: 'trefoil',
+    touching: true,
+    spacing_mm: 100,
+    transposed: false,
+    bonding: 'both',
+    crossBondLambda1: null,
+    load: 'rated',
+    current_A: 0,
+    ...patch,
+  });
+
+  it('a circuit far away, or one carrying no current, leaves the rating unchanged', () => {
+    const single = calculateRating(MV, inst()).I;
+    expect(calculateRating(MV, inst({ circuits: [other({ x_m: 2000 })] })).I).toBeCloseTo(single, 3);
+    expect(calculateRating(MV, inst({ circuits: [other({ load: 'fixed', current_A: 0 })] })).I).toBeCloseTo(single, 9);
+  });
+
+  it('two identical circuits side by side: both rate lower and equally, in either mode', () => {
+    const single = calculateRating(MV, inst()).I;
+    const own = calculateRating(MV, inst({ circuits: [other()] }));
+    const equal = calculateRating(MV, inst({ circuits: [other()], ratingMode: 'equal-current' }));
+    expect(own.I).toBeLessThan(single);
+    expect(own.system!.circuits[1].I).toBeCloseTo(own.I, 6);
+    expect(equal.I).toBeCloseTo(own.I, 6);
+  });
+
+  it('each rated circuit reaches exactly its maximum temperature (own-limit mode)', () => {
+    const i = inst({ circuits: [other({ x_m: 0.4 }), other({ id: 'c3', name: 'C3', x_m: -0.4 })] });
+    const r = calculateRating(MV, i);
+    expect(r.ok).toBe(true);
+    r.system!.circuits.forEach((c) => expect(c.hottestTemp).toBeCloseTo(90, 6));
+    // the middle circuit is heated most, so it rates lowest
+    expect(r.I).toBeLessThan(r.system!.circuits[1].I);
+    expect(calculateTemperature(MV, i, r.I).conductor).toBeCloseTo(90, 5);
+  });
+
+  it('matches superposition over all six cables for equally loaded, equal-loss circuits', () => {
+    const flat = { formation: 'flat' as const, touching: false, spacing_mm: 100, transposed: true, depth_m: 1 };
+    const i = inst({ ...flat, ratingMode: 'equal-current', circuits: [other({ ...flat, x_m: 0.5 })] });
+    const r = calculateRating(MV, i);
+    expect(r.ok).toBe(true);
+    const De = r.geometry.De;
+    const xs = [-100, 0, 100, 400, 500, 600];
+    const y = 1000;
+    const T4s = xs.map((xp) => {
+      let sum = Math.acosh((2 * y) / De);
+      xs.forEach((xk) => {
+        if (xk !== xp) sum += Math.log(Math.hypot(xp - xk, 2 * y) / Math.abs(xp - xk));
+      });
+      return (1 / (2 * Math.PI)) * sum;
+    });
+    const T4 = Math.max(...T4s);
+    const R = r.conductor.R;
+    const l1 = r.sheath.lambda1;
+    const I = Math.sqrt((90 - 20) / (R * r.thermal.T1 + R * (1 + l1) * (r.thermal.T3 + T4)));
+    expect(r.I).toBeCloseTo(I, 6);
+  });
+
+  it('a heavily loaded neighbour reduces the rating and is flagged when it overheats', () => {
+    const r = calculateRating(MV, inst({ circuits: [other({ cable: HV, x_m: 0.6, depth_m: 1, load: 'fixed', current_A: 1600 })] }));
+    expect(r.ok).toBe(true);
+    expect(r.I).toBeLessThan(calculateRating(MV, inst()).I);
+    expect(r.warnings.some((w) => w.includes('C2 reaches'))).toBe(true);
+  });
+
+  it('rejects circuits that overlap', () => {
+    const r = calculateRating(MV, inst({ circuits: [other({ x_m: 0.02 })] }));
+    expect(r.ok).toBe(false);
+    expect(r.errors[0]).toMatch(/overlap/);
+  });
+
+  it('works in ducts and in a shared duct bank', () => {
+    const ducts = calculateRating(MV, inst({ type: 'ducts', circuits: [other({ x_m: 0.4 })] }));
+    expect(ducts.ok).toBe(true);
+    expect(ducts.I).toBeLessThan(calculateRating(MV, inst({ type: 'ducts' })).I);
+    const bank = calculateRating(
+      MV,
+      inst({
+        type: 'ductbank',
+        depth_m: 1,
+        bank: { width_m: 0.8, height_m: 0.5, concreteRho: 1, centreX_m: 0.15, centreDepth_m: null },
+        circuits: [other({ x_m: 0.3, depth_m: 1 })],
+      }),
+    );
+    expect(bank.ok).toBe(true);
+    expect(bank.system!.circuits[1].I).toBeCloseTo(bank.I, 6);
   });
 });
