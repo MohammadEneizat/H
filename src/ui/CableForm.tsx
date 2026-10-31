@@ -1,0 +1,334 @@
+import React from 'react';
+import {
+  INSULATIONS,
+  JACKETS,
+  METALS,
+  defaultSkinProximity,
+  deriveGeometry,
+  type CableSpec,
+  type InsulationKey,
+  type JacketKey,
+  type MetalKey,
+} from '../engine';
+import { NumField, Overrides, Section, SelectField, Segmented, TextField } from './fields';
+import { fmt } from './format';
+
+interface Props {
+  cable: CableSpec;
+  onChange: (c: CableSpec) => void;
+}
+
+const insulationOptions = (Object.keys(INSULATIONS) as InsulationKey[]).map((k) => ({
+  value: k,
+  label: INSULATIONS[k].label,
+}));
+const jacketOptions = (Object.keys(JACKETS) as JacketKey[]).map((k) => ({ value: k, label: JACKETS[k].label }));
+const metalOptions = (Object.keys(METALS) as MetalKey[]).map((k) => ({ value: k, label: METALS[k].label }));
+
+export function CableForm({ cable, onChange }: Props) {
+  const c = cable;
+  const set = (patch: Partial<CableSpec>) => onChange({ ...c, ...patch });
+  const setCond = (patch: Partial<CableSpec['conductor']>) => set({ conductor: { ...c.conductor, ...patch } });
+  const setIns = (patch: Partial<CableSpec['insulation']>) => set({ insulation: { ...c.insulation, ...patch } });
+  const setScr = (patch: Partial<CableSpec['screen']>) => set({ screen: { ...c.screen, ...patch } });
+  const setJac = (patch: Partial<CableSpec['jacket']>) => set({ jacket: { ...c.jacket, ...patch } });
+
+  const ins = INSULATIONS[c.insulation.material];
+  const dflt = defaultSkinProximity(c.conductor.material, c.conductor.construction, ins.system, c.conductor.millikenWires);
+  const { geometry: g } = deriveGeometry(c);
+  const num = (v: number | null) => (v === null ? NaN : v);
+
+  return (
+    <div className="form">
+      <Section title="Cable">
+        <TextField id="cable-name" label="Name" value={c.name} onChange={(name) => set({ name })} />
+        <NumField id="u0" label="Rated voltage U0" unit="kV" value={c.U0_kV} onChange={(v) => set({ U0_kV: num(v) })} />
+        <NumField
+          id="tmax"
+          label="Max. conductor temperature"
+          unit="°C"
+          value={c.maxTemp_C}
+          onChange={(v) => set({ maxTemp_C: num(v) })}
+        />
+      </Section>
+
+      <Section title="Conductor">
+        <Segmented
+          id="cond-mat"
+          label="Material"
+          value={c.conductor.material}
+          options={[
+            { value: 'Cu', label: 'Copper' },
+            { value: 'Al', label: 'Aluminium' },
+          ]}
+          onChange={(material) => setCond({ material })}
+        />
+        <SelectField
+          id="cond-type"
+          label="Construction"
+          value={c.conductor.construction}
+          options={[
+            { value: 'stranded', label: 'Round stranded' },
+            { value: 'solid', label: 'Round solid' },
+            { value: 'milliken', label: 'Milliken (segmental)' },
+          ]}
+          onChange={(construction) => setCond({ construction })}
+        />
+        {c.conductor.construction === 'milliken' && c.conductor.material === 'Cu' && ins.system === 'extruded' && (
+          <SelectField
+            id="cond-wires"
+            label="Milliken wires"
+            value={c.conductor.millikenWires}
+            options={[
+              { value: 'insulated', label: 'Insulated (enamelled) wires' },
+              { value: 'bare-uni', label: 'Bare, uni-directional' },
+              { value: 'bare-bi', label: 'Bare, bi-directional' },
+            ]}
+            onChange={(millikenWires) => setCond({ millikenWires })}
+          />
+        )}
+        <NumField
+          id="cond-area"
+          label="Cross-section"
+          unit="mm²"
+          value={c.conductor.area_mm2}
+          onChange={(v) => setCond({ area_mm2: num(v) })}
+        />
+        <NumField
+          id="cond-d"
+          label="Conductor diameter"
+          unit="mm"
+          value={c.conductor.diameter_mm}
+          onChange={(v) => setCond({ diameter_mm: num(v) })}
+        />
+        <NumField
+          id="cond-r20"
+          label="DC resistance at 20 °C"
+          unit="Ω/km"
+          value={c.conductor.R20_ohm_km}
+          onChange={(v) => setCond({ R20_ohm_km: num(v) })}
+          hint="Maximum value from the datasheet (IEC 60228)."
+        />
+        <Overrides label="Datasheet AC resistance and ks, kp">
+          <NumField
+            id="cond-rac"
+            label={`AC resistance at ${c.maxTemp_C} °C`}
+            unit="Ω/km"
+            optional
+            value={c.conductor.Rac_ohm_km}
+            onChange={(v) => setCond({ Rac_ohm_km: v })}
+            placeholder="calculated"
+            hint="Leave empty to calculate skin and proximity effects."
+          />
+          <NumField
+            id="cond-ks"
+            label="Skin effect ks"
+            optional
+            value={c.conductor.ks}
+            onChange={(v) => setCond({ ks: v })}
+            placeholder={`${dflt.ks} (Table 2)`}
+          />
+          <NumField
+            id="cond-kp"
+            label="Proximity effect kp"
+            optional
+            value={c.conductor.kp}
+            onChange={(v) => setCond({ kp: v })}
+            placeholder={`${dflt.kp} (Table 2)`}
+          />
+        </Overrides>
+      </Section>
+
+      <Section title="Insulation">
+        <SelectField
+          id="ins-mat"
+          label="Material"
+          value={c.insulation.material}
+          options={insulationOptions}
+          onChange={(material) => set({ insulation: { ...c.insulation, material }, maxTemp_C: INSULATIONS[material].maxTemp_C })}
+        />
+        <NumField
+          id="cs-t"
+          label="Conductor screen"
+          unit="mm"
+          value={c.conductorScreen_mm}
+          onChange={(v) => set({ conductorScreen_mm: num(v) })}
+        />
+        <NumField
+          id="ins-t"
+          label="Insulation thickness"
+          unit="mm"
+          value={c.insulation.thickness_mm}
+          onChange={(v) => setIns({ thickness_mm: num(v) })}
+        />
+        <NumField
+          id="is-t"
+          label="Insulation screen"
+          unit="mm"
+          value={c.insulationScreen_mm}
+          onChange={(v) => set({ insulationScreen_mm: num(v) })}
+        />
+        <NumField
+          id="bed-t"
+          label="Tapes under metallic screen"
+          unit="mm"
+          value={c.bedding_mm}
+          onChange={(v) => set({ bedding_mm: num(v) })}
+          hint="Swelling or bedding tapes. Counted as insulation in T1."
+        />
+        <Overrides>
+          <NumField
+            id="ins-rho"
+            label="Thermal resistivity ρT"
+            unit="K·m/W"
+            optional
+            value={c.insulation.rhoT}
+            onChange={(v) => setIns({ rhoT: v })}
+            placeholder={`${ins.rhoT}`}
+          />
+          <NumField
+            id="ins-eps"
+            label="Permittivity εr"
+            optional
+            value={c.insulation.epsR}
+            onChange={(v) => setIns({ epsR: v })}
+            placeholder={`${ins.epsR}`}
+          />
+          <NumField
+            id="ins-tan"
+            label="Loss factor tan δ"
+            optional
+            value={c.insulation.tanDelta}
+            onChange={(v) => setIns({ tanDelta: v })}
+            placeholder={`${ins.tanDelta}`}
+          />
+        </Overrides>
+      </Section>
+
+      <Section title="Metallic screen or sheath">
+        <Segmented
+          id="scr-form"
+          label="Type"
+          value={c.screen.form}
+          options={[
+            { value: 'wires', label: 'Wire screen' },
+            { value: 'smooth', label: 'Smooth sheath' },
+            { value: 'corrugated', label: 'Corrugated' },
+          ]}
+          onChange={(form) => setScr({ form })}
+        />
+        <SelectField
+          id="scr-mat"
+          label="Material"
+          value={c.screen.material}
+          options={metalOptions}
+          onChange={(material) => setScr({ material })}
+        />
+        <NumField
+          id="scr-t"
+          label={c.screen.form === 'wires' ? 'Wire diameter' : 'Sheath thickness'}
+          unit="mm"
+          value={c.screen.thickness_mm}
+          onChange={(v) => setScr({ thickness_mm: num(v) })}
+        />
+        {c.screen.form === 'wires' && (
+          <NumField
+            id="scr-n"
+            label="Number of wires"
+            optional
+            value={c.screen.wireCount}
+            onChange={(v) => setScr({ wireCount: v })}
+          />
+        )}
+        {c.screen.form === 'corrugated' && (
+          <NumField
+            id="scr-doc"
+            label="Diameter over crests Doc"
+            unit="mm"
+            value={c.screen.corrugationOD_mm}
+            onChange={(v) => setScr({ corrugationOD_mm: v })}
+          />
+        )}
+        <NumField
+          id="scr-a"
+          label="Cross-section"
+          unit="mm²"
+          optional={c.screen.form !== 'wires'}
+          value={c.screen.area_mm2}
+          onChange={(v) => setScr({ area_mm2: v })}
+          placeholder={c.screen.form === 'smooth' ? 'π·d·t' : undefined}
+        />
+        <NumField
+          id="scr-r"
+          label="DC resistance at 20 °C"
+          unit="Ω/km"
+          optional
+          value={c.screen.R20_ohm_km}
+          onChange={(v) => setScr({ R20_ohm_km: v })}
+          placeholder="from area"
+          hint="Use the datasheet value if given; it replaces the area-based resistance."
+        />
+      </Section>
+
+      <Section title="Oversheath">
+        <SelectField
+          id="jac-mat"
+          label="Material"
+          value={c.jacket.material}
+          options={jacketOptions}
+          onChange={(material) => setJac({ material })}
+        />
+        <NumField
+          id="jac-t"
+          label="Thickness"
+          unit="mm"
+          value={c.jacket.thickness_mm}
+          onChange={(v) => setJac({ thickness_mm: num(v) })}
+        />
+        <NumField
+          id="jac-rho"
+          label="Thermal resistivity ρT"
+          unit="K·m/W"
+          optional={c.jacket.material !== 'custom'}
+          value={c.jacket.rhoT}
+          onChange={(v) => setJac({ rhoT: v })}
+          placeholder={`${JACKETS[c.jacket.material].rhoT}`}
+        />
+        <NumField
+          id="de"
+          label="Overall diameter (datasheet)"
+          unit="mm"
+          optional
+          value={c.overallDiameter_mm}
+          onChange={(v) => set({ overallDiameter_mm: v })}
+          placeholder={Number.isFinite(g.DeBuilt) ? `${fmt(g.DeBuilt, 1)} built up` : undefined}
+          hint="Used for the external thermal resistance when entered."
+        />
+      </Section>
+
+      <Section title="Built-up diameters">
+        <table className="mini-table field-wide">
+          <tbody>
+            {[
+              ['Over conductor screen', g.dcScreen],
+              ['Over insulation', g.Di],
+              ['Under metallic screen', g.Dunder],
+              ['Mean screen diameter d', g.dMean],
+              ['Over metallic screen Ds', g.Ds],
+              ['Overall De', g.De],
+            ].map(([k, v]) => (
+              <tr key={k as string}>
+                <th scope="row">{k}</th>
+                <td>{fmt(v as number, 1)} mm</td>
+              </tr>
+            ))}
+            <tr>
+              <th scope="row">Screen cross-section</th>
+              <td>{fmt(g.As, 1)} mm²</td>
+            </tr>
+          </tbody>
+        </table>
+      </Section>
+    </div>
+  );
+}
