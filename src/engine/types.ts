@@ -1,3 +1,4 @@
+import type { FieldModel } from './field';
 import type {
   AirArrangement,
   ConductorConstruction,
@@ -303,6 +304,8 @@ export interface RatingResult {
   iterations: number;
   /** Present when the installation has more than one circuit; circuits[0] is the main circuit */
   system?: SystemResult;
+  /** Temperature field in the ground at the rated current (buried installations) */
+  field?: FieldModel;
 }
 
 export interface TemperatureResult {

@@ -1,5 +1,5 @@
 import React from 'react';
-import type { CableSpec, CircuitSpec, InstallationSpec } from '../engine';
+import { deriveGeometry, type CableSpec, type CircuitSpec, type InstallationSpec } from '../engine';
 import { EXAMPLE_CABLES } from '../engine/presets';
 import { NumField, Section, SelectField, Segmented, TextField, Toggle } from './fields';
 import { fmt } from './format';
@@ -34,9 +34,13 @@ export function CircuitsForm({ inst, cable, library, onChange }: Props) {
     );
   }
 
+  /** Half the horizontal width of a circuit (m). */
+  const halfWidth = (c: { cable: CableSpec | null; formation: string; touching: boolean; spacing_mm: number }) => {
+    const D = inDucts ? inst.duct.outerD_mm : deriveGeometry(c.cable ?? cable).geometry.De || 50;
+    const s = c.touching ? D : c.spacing_mm;
+    return ((c.formation === 'flat' ? s : s / 2) + D / 2) / 1000;
+  };
   const addCircuit = (from?: CircuitSpec) => {
-    const xs = [0, ...inst.circuits.map((c) => c.x_m)];
-    const gap = inst.type === 'direct' ? 0.5 : Math.max(0.35, (3 * inst.duct.outerD_mm) / 1000 + 0.1);
     const base: CircuitSpec = from
       ? { ...clone(from), id: newId(), name: `C${inst.circuits.length + 2}` }
       : {
@@ -54,7 +58,12 @@ export function CircuitsForm({ inst, cable, library, onChange }: Props) {
           load: 'rated',
           current_A: 300,
         };
-    base.x_m = Number((Math.max(...xs) + gap).toFixed(3));
+    const clearance = inst.type === 'direct' ? 0.3 : 0.15;
+    const right = Math.max(
+      halfWidth({ cable: null, formation: inst.formation, touching: inst.touching, spacing_mm: inst.spacing_mm }),
+      ...inst.circuits.map((c) => c.x_m + halfWidth(c)),
+    );
+    base.x_m = Number((right + clearance + halfWidth(base)).toFixed(3));
     set({ circuits: [...inst.circuits, base] });
   };
 

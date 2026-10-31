@@ -595,6 +595,26 @@ textarea {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.btn-primary:hover {
+  border-color: var(--accent);
+  filter: brightness(1.06);
+}
+.report-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 14px;
+}
+.report-msg {
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
 .btn-quiet {
   border-color: transparent;
   color: var(--ink-2);
@@ -849,7 +869,7 @@ textarea {
 /* ---------- Drawings ---------- */
 .drawings {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(0, 1.6fr);
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 1.9fr);
   gap: 20px 28px;
 }
 @media (max-width: 720px) {
@@ -874,19 +894,17 @@ textarea {
   max-height: 300px;
   display: block;
 }
-.drawing-cell:first-child .drawing svg {
-  max-width: 240px;
-  margin: 0 auto;
-}
+
 .inst-views {
   display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
   gap: 12px;
   align-items: start;
 }
 .inst-views svg {
   border-radius: 4px;
-  max-height: 280px;
+  max-height: 320px;
+  border: 1px solid var(--line-2);
 }
 @media (max-width: 520px) {
   .inst-views {
@@ -914,20 +932,72 @@ textarea {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 4px;
+  gap: 5px;
   font-size: var(--fs-sm);
 }
 .layer-key li {
   display: grid;
-  grid-template-columns: 12px 1fr auto;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: baseline;
+}
+.layer-n {
+  grid-row: span 2;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--ink-2);
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  align-self: start;
+}
+.layer-name {
+  font-weight: 500;
+  color: var(--ink);
+}
+.layer-detail {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+.cable-drawing svg {
+  max-width: 280px;
+  margin: 0 auto;
+}
+.heat-legend {
+  display: grid;
+  gap: 4px;
+  max-width: 520px;
+}
+.heat-legend-title {
+  font-size: var(--fs-xs);
   color: var(--ink-2);
 }
-.layer-key .num {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--ink);
+.heat-bar {
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+}
+.heat-ticks {
+  position: relative;
+  height: 14px;
+  font-size: 0.6875rem;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.heat-ticks span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.heat-ticks span:first-child {
+  transform: none;
+}
+.heat-ticks span:last-child {
+  transform: translateX(-100%);
 }
 .swatch {
   width: 12px;

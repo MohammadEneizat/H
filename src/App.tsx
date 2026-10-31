@@ -6,6 +6,7 @@ import { CircuitsForm } from './ui/CircuitsForm';
 import { InstallationForm } from './ui/InstallationForm';
 import { Results } from './ui/Results';
 import { amps } from './ui/format';
+import { safeName, saveFile, saveMessage } from './ui/save';
 
 type Tab = 'cable' | 'installation' | 'circuits' | 'library';
 
@@ -139,14 +140,9 @@ export function App() {
     }
   };
 
-  const downloadJson = () => {
+  const downloadJson = async () => {
     const blob = new Blob([projectJson()], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${cable.name.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'cable'}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    setMessage(saveMessage(await saveFile(`${safeName(cable.name)}.json`, blob), 'Project file'));
   };
 
   const saveToLibrary = () => {
@@ -290,11 +286,9 @@ export function App() {
                     <button type="button" className="btn" onClick={copyJson}>
                       Copy JSON
                     </button>
-                    {!framed && (
-                      <button type="button" className="btn" onClick={downloadJson}>
-                        Download JSON
-                      </button>
-                    )}
+                    <button type="button" className="btn" onClick={downloadJson}>
+                      Download JSON
+                    </button>
                     <button type="button" className="btn" onClick={() => fileRef.current?.click()}>
                       Open file…
                     </button>

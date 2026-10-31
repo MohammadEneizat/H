@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateRating, calculateTemperature, deriveGeometry, sweepRating } from '../src/engine';
+import { calculateRating, calculateTemperature, deriveGeometry, fieldTemperature, sweepRating } from '../src/engine';
 import { conductorAC, eddyCoefficients, sheathLossFactors, skinEffectFactor } from '../src/engine/losses';
 import { DEFAULT_INSTALLATION, EXAMPLE_CABLES } from '../src/engine/presets';
 import { buriedIsolatedT4, circuitPositions, ductBankRadius, groupT4 } from '../src/engine/thermal';
@@ -385,5 +385,24 @@ describe('several circuits (IEC 60287-2-1 2.2.3.1)', () => {
     );
     expect(bank.ok).toBe(true);
     expect(bank.system!.circuits[1].I).toBeCloseTo(bank.I, 6);
+  });
+});
+
+describe('temperature field', () => {
+  it('is at ambient on the ground surface and matches the cable surface temperature', () => {
+    const i = inst({ formation: 'flat', touching: false, spacing_mm: 300, depth_m: 1 });
+    const r = calculateRating(MV, i);
+    const f = r.field!;
+    expect(fieldTemperature(f, 0, 0)).toBeCloseTo(20, 9);
+    expect(fieldTemperature(f, 5000, 0)).toBeCloseTo(20, 9);
+    // centre cable, a point on its surface level with its axis
+    const p = r.positions[r.thermal.t4.hottest];
+    const surf = fieldTemperature(f, p.x + r.geometry.De / 2 + 1e-6, p.y);
+    expect(Math.abs(surf - r.temperatures.surface)).toBeLessThan(0.3);
+    expect(Number.isNaN(fieldTemperature(f, p.x, p.y))).toBe(true);
+  });
+
+  it('is absent for cables in free air', () => {
+    expect(calculateRating(MV, inst({ type: 'air' })).field).toBeUndefined();
   });
 });

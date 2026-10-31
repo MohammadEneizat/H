@@ -1,15 +1,13 @@
 import React, { useMemo, useState } from 'react';
-import {
-  AIR_CONSTANTS,
-  calculateTemperature,
-  type CableSpec,
-  type InstallationSpec,
-  type RatingResult,
-} from '../engine';
+import { calculateTemperature, type CableSpec, type InstallationSpec, type RatingResult } from '../engine';
+import { buildPdfReport } from '../report/pdf';
+import { calcSections, summaryChips, type Row } from '../report/sections';
 import { CableSection, InstallationView } from './Drawing';
 import { NumField } from './fields';
-import { amps, fmt, sig } from './format';
+import { amps, fmt } from './format';
 import { SweepChart } from './SweepChart';
+import { safeName, saveFile, saveMessage } from './save';
+import { PALETTES, useThemeMode } from './theme';
 
 interface Props {
   cable: CableSpec;
@@ -17,14 +15,19 @@ interface Props {
   result: RatingResult;
 }
 
-const typeLabel = { direct: 'Direct buried', ducts: 'In ducts', ductbank: 'Duct bank', air: 'Free air' } as const;
-const bondLabel = { both: 'Both ends bonded', single: 'Single-point bonded', cross: 'Cross-bonded' } as const;
-
-type Row = [quantity: string, symbol: string, value: string, unit: string, ref?: string];
 
 function CalcTable({ title, rows, note }: { title: string; rows: Row[]; note?: string }) {
   return (
     <section className="calc-block">
+      <CalcTableInner title={title} rows={rows} />
+      {note && <p className="calc-note">{note}</p>}
+    </section>
+  );
+}
+
+function CalcTableInner({ title, rows }: { title: string; rows: Row[] }) {
+  return (
+    <>
       <h3>{title}</h3>
       <div className="table-scroll">
         <table className="calc-table">
@@ -52,25 +55,28 @@ function CalcTable({ title, rows, note }: { title: string; rows: Row[]; note?: s
           </tbody>
         </table>
       </div>
-      {note && <p className="calc-note">{note}</p>}
-    </section>
+    </>
   );
 }
 
 export function Results({ cable, inst, result: r }: Props) {
+  const pal = PALETTES[useThemeMode()];
+  const [report, setReport] = useState<{ busy: boolean; msg: string }>({ busy: false, msg: '' });
+  const makeReport = async () => {
+    setReport({ busy: true, msg: 'Preparing the PDF…' });
+    try {
+      const blob = await buildPdfReport({ cable, inst, result: r });
+      const outcome = await saveFile(`${safeName(cable.name)}_IEC60287_rating.pdf`, blob);
+      setReport({ busy: false, msg: saveMessage(outcome, 'PDF report') });
+    } catch (e) {
+      setReport({ busy: false, msg: e instanceof Error ? e.message : 'The report could not be created.' });
+    }
+  };
   const [load, setLoad] = useState<number | null>(null);
   const loadI = load ?? (r.ok ? Math.round(r.I * 0.8) : 0);
   const temp = useMemo(() => (r.ok ? calculateTemperature(cable, inst, loadI) : null), [cable, inst, loadI, r.ok]);
 
-  const chips = [
-    typeLabel[inst.type],
-    inst.type === 'air'
-      ? AIR_CONSTANTS[inst.air.arrangement].label
-      : `${inst.formation === 'trefoil' ? 'Trefoil' : 'Flat'}, ${inst.touching ? 'touching' : `${fmt(inst.spacing_mm, 0)} mm`}`,
-    bondLabel[inst.bonding],
-    ...(r.system ? [`${r.system.circuits.length} circuits`] : []),
-    inst.type === 'air' ? `${fmt(inst.ambient_C, 0)} °C air` : `${fmt(inst.depth_m, 2)} m · ${fmt(inst.soilRho, 2)} K·m/W · ${fmt(inst.ambient_C, 0)} °C`,
-  ];
+  const chips = summaryChips(inst, r);
 
   if (!r.ok) {
     return (
@@ -91,90 +97,7 @@ export function Results({ cable, inst, result: r }: Props) {
     );
   }
 
-  const c = r.conductor;
-  const t4 = r.thermal.t4;
-  const perKm = (v: number) => sig(v * 1000, 4);
-  const sheathCols = r.sheath.cables;
-
-  const conductorRows: Row[] = [
-    ['DC resistance at 20 °C', 'R0', perKm(c.R0), 'Ω/km', '2.1.1'],
-    [`DC resistance at ${fmt(r.temperatures.conductor, 1)} °C`, 'R′', perKm(c.Rdc), 'Ω/km', '2.1.1'],
-    ['Skin effect coefficient', 'ks', sig(c.ks, 3), '', 'Table 2'],
-    ['Skin effect argument', 'xs', sig(c.xs, 4), '', '2.1.2'],
-    ['Skin effect factor', 'ys', sig(c.ys, 4), '', '2.1.2'],
-    ['Proximity effect coefficient', 'kp', sig(c.kp, 3), '', 'Table 2'],
-    ['Proximity effect argument', 'xp', sig(c.xp, 4), '', '2.1.4'],
-    ['Proximity effect factor', 'yp', sig(c.yp, 4), '', '2.1.4'],
-    [
-      c.fromDatasheet ? 'AC resistance (datasheet)' : 'AC resistance R′(1 + ys + yp)',
-      'R',
-      perKm(c.R),
-      'Ω/km',
-      c.fromDatasheet ? 'datasheet' : '2.1',
-    ],
-  ];
-
-  const dielectricRows: Row[] = [
-    ['Capacitance', 'C', sig(r.dielectric.C * 1e9, 4), 'µF/km', '2.2'],
-    [
-      r.dielectric.included ? 'Dielectric loss ωCU0² tan δ' : `Dielectric loss (neglected below ${r.dielectric.threshold_kV} kV)`,
-      'Wd',
-      sig(r.dielectric.Wd, 4),
-      'W/m',
-      '2.2',
-    ],
-  ];
-
-  const sheathRows: Row[] = [
-    ['Screen resistance at 20 °C', 'Rs,20', perKm(r.sheath.Rs20), 'Ω/km', '2.3'],
-    [`Screen resistance at ${fmt(r.temperatures.sheath, 1)} °C`, 'Rs', perKm(r.sheath.Rs), 'Ω/km', '2.3'],
-    ['Screen reactance', inst.formation === 'flat' && inst.transposed ? 'X1' : 'X', perKm(r.sheath.X), 'Ω/km', '2.3.1'],
-    ['Eddy current parameter', 'm', sig(r.sheath.m, 4), '', '2.3.6'],
-  ];
-  if (r.sheath.Ft !== null) sheathRows.push(['Eddy loss reduction (Milliken)', 'Ft', sig(r.sheath.Ft, 4), '', '2.3.1']);
-
-  const thermalRows: Row[] = [
-    ['Insulation (conductor to screen)', 'T1', sig(r.thermal.T1, 4), 'K·m/W', '2-1 2.1.1'],
-    ['Bedding (no armour)', 'T2', '0', 'K·m/W', '2-1 2.1.2'],
-    ['Oversheath', 'T3', sig(r.thermal.T3, 4), 'K·m/W', '2-1 2.1.3'],
-  ];
-  if (t4.T4p !== undefined) {
-    thermalRows.push(['Air space in duct', 'T4′', sig(t4.T4p, 4), 'K·m/W', '2-1 2.2.7.1']);
-    thermalRows.push(['Duct wall', 'T4″', sig(t4.T4pp, 4), 'K·m/W', '2-1 2.2.7.2']);
-    thermalRows.push(['Duct to ambient incl. mutual heating', 'T4‴', sig(t4.T4ppp, 4), 'K·m/W', '2-1 2.2.7.3']);
-    if (t4.bankCorrection !== undefined)
-      thermalRows.push(['of which duct bank correction', '', sig(t4.bankCorrection, 4), 'K·m/W', '2-1 2.2.7.3']);
-    thermalRows.push(['Mean temperature in duct', 'θm', fmt(t4.thetaM, 1), '°C', '2-1 2.2.7.1']);
-  }
-  if (t4.h !== undefined) {
-    thermalRows.push(['Heat dissipation coefficient', 'h', sig(t4.h, 4), 'W/m²K^5/4', '2-1 2.2.1']);
-    thermalRows.push(['Surface temperature rise', 'Δθs', fmt(t4.dThetaS, 2), 'K', '2-1 2.2.1']);
-  }
-  thermalRows.push([
-    inst.type === 'air' ? 'External, free air' : 'External thermal resistance',
-    inst.type === 'air' ? 'T4*' : 'T4',
-    sig(t4.T4, 4),
-    'K·m/W',
-    inst.type === 'air' ? '2-1 2.2.1' : '2-1 2.2.3',
-  ]);
-
-  if (r.system && t4.mutual !== undefined)
-    thermalRows.push(['Rise from other circuits at this cable', 'Δθp', fmt(t4.mutual, 2), 'K', '2-1 2.2.3.1']);
-
-  const lossRows: Row[] = [
-    ['Conductor loss I²R', 'Wc', sig(r.losses.Wc, 4), 'W/m', '1.4'],
-    ['Screen loss λ1·Wc', 'Ws', sig(r.losses.Ws, 4), 'W/m', '1.4'],
-    ['Dielectric loss', 'Wd', sig(r.losses.Wd, 4), 'W/m', '2.2'],
-    ['Total heat per cable', 'W', sig(r.losses.W, 4), 'W/m', ''],
-  ];
-  const tempRows: Row[] = [
-    ['Conductor', 'θc', fmt(r.temperatures.conductor, 1), '°C', ''],
-    ['Metallic screen / sheath', 'θs', fmt(r.temperatures.sheath, 1), '°C', ''],
-    ['Cable surface', 'θe', fmt(r.temperatures.surface, 1), '°C', ''],
-  ];
-  if (r.temperatures.ductInner !== undefined)
-    tempRows.push(['Duct inner surface', 'θd', fmt(r.temperatures.ductInner, 1), '°C', '']);
-  tempRows.push([inst.type === 'air' ? 'Ambient air' : 'Ambient soil', 'θa', fmt(inst.ambient_C, 1), '°C', '']);
+  const { sections, lambda } = calcSections(inst, r);
 
   const over = temp && temp.ok && temp.conductor > cable.maxTemp_C + 1e-6;
 
@@ -197,6 +120,14 @@ export function Results({ cable, inst, result: r }: Props) {
               </li>
             ))}
           </ul>
+          <div className="report-row">
+            <button type="button" className="btn btn-primary" onClick={makeReport} disabled={report.busy}>
+              {report.busy ? 'Preparing PDF…' : 'Download PDF report'}
+            </button>
+            <span className="report-msg" role="status" aria-live="polite">
+              {report.busy ? '' : report.msg}
+            </span>
+          </div>
         </div>
         <div className="summary-side">
           {r.cases.length > 1 && (
@@ -320,11 +251,11 @@ export function Results({ cable, inst, result: r }: Props) {
       <section className="card drawings" aria-label="Drawings">
         <div className="drawing-cell">
           <h2 className="drawing-title">Cable</h2>
-          <CableSection cable={cable} result={r} />
+          <CableSection cable={cable} result={r} pal={pal} />
         </div>
         <div className="drawing-cell drawing-wide">
           <h2 className="drawing-title">Installation</h2>
-          <InstallationView cable={cable} inst={inst} result={r} />
+          <InstallationView cable={cable} inst={inst} result={r} pal={pal} />
         </div>
       </section>
 
@@ -341,69 +272,44 @@ export function Results({ cable, inst, result: r }: Props) {
           </div>
         </header>
         <div className="calc-grid">
-          <CalcTable title="Conductor" rows={conductorRows} />
-          <CalcTable title="Dielectric" rows={dielectricRows} />
-          <section className="calc-block">
-            <h3>Screen / sheath losses</h3>
-            <div className="table-scroll">
-              <table className="calc-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Quantity</th>
-                    <th scope="col">Symbol</th>
-                    <th scope="col" className="num">
-                      Value
-                    </th>
-                    <th scope="col">Unit</th>
-                    <th scope="col">IEC 60287</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sheathRows.map(([q, s, v, u, ref]) => (
-                    <tr key={q}>
-                      <th scope="row">{q}</th>
-                      <td className="sym">{s}</td>
-                      <td className="num">{v}</td>
-                      <td className="unit">{u}</td>
-                      <td className="ref">{ref}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="table-scroll">
-              <table className="calc-table lambda-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Cable</th>
-                    <th scope="col" className="num">
-                      λ1′ circulating
-                    </th>
-                    <th scope="col" className="num">
-                      λ1″ eddy
-                    </th>
-                    <th scope="col" className="num">
-                      λ1
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sheathCols.map((sc, i) => (
-                    <tr key={sc.label} className={i === r.sheath.governing ? 'is-governing' : ''}>
-                      <th scope="row">{sc.label}</th>
-                      <td className="num">{sig(sc.lambda1p, 4)}</td>
-                      <td className="num">{sig(sc.lambda1pp, 4)}</td>
-                      <td className="num">{sig(sc.lambda1, 4)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="calc-note">Highlighted cable has the largest loss factor; its λ1 = {sig(r.sheath.lambda1, 4)} is used.</p>
-          </section>
-          <CalcTable title="Thermal resistances" rows={thermalRows} note={t4.method} />
-          <CalcTable title="Losses at the rated current" rows={lossRows} />
-          <CalcTable title="Temperatures at the rated current" rows={tempRows} />
+          {sections.map((sec) =>
+            sec.title.startsWith('Screen') ? (
+              <section className="calc-block" key={sec.title}>
+                <CalcTableInner title={sec.title} rows={sec.rows} />
+                <div className="table-scroll">
+                  <table className="calc-table lambda-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Cable</th>
+                        <th scope="col" className="num">
+                          λ1′ circulating
+                        </th>
+                        <th scope="col" className="num">
+                          λ1″ eddy
+                        </th>
+                        <th scope="col" className="num">
+                          λ1
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lambda.map(([label, , a, b, c], i) => (
+                        <tr key={label} className={i === r.sheath.governing ? 'is-governing' : ''}>
+                          <th scope="row">{label}</th>
+                          <td className="num">{a}</td>
+                          <td className="num">{b}</td>
+                          <td className="num">{c}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="calc-note">The highlighted cable has the largest loss factor; its λ1 is used.</p>
+              </section>
+            ) : (
+              <CalcTable key={sec.title} title={sec.title} rows={sec.rows} note={sec.note} />
+            ),
+          )}
         </div>
       </section>
     </div>

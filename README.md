@@ -41,6 +41,26 @@ temperature for any load current, with every property at its actual temperature.
 For flat formation the three cables have different loss factors. The app uses the largest
 one together with T4 of the hottest position, which is conservative.
 
+## Drawings and report
+
+- **Cable cross-section**, drawn to scale from the layer thicknesses: individual conductor
+  strands or Milliken segments, semiconducting screens, insulation, tapes, separate screen
+  wires or the sheath (smooth or corrugated), and the oversheath. Numbered callouts match
+  a layer key with the datasheet values.
+- **Installation**: an overview to scale from the ground surface (depth dimension, duct
+  bank, ducts) and a detail of the circuits, both with the **ground temperature field** at
+  the rated current as a heat map with labelled isotherms and a °C scale. The field uses the
+  same superposition model as the rating (line sources plus images; the duct bank adds the
+  concrete correction inside the bank). It is for illustration: the rating itself uses the
+  IEC formulas, which for touching groups differ slightly from pure superposition.
+- **PDF report** (*Download PDF report* in the results): A4, with the rating and key
+  figures, all circuits, the drawings with the temperature scale, all inputs (standard
+  values marked), rating-sensitivity charts, the full calculation sheet with IEC clauses,
+  warnings and assumptions, and the method. The report is built in the browser with
+  [jsPDF](https://github.com/parallax/jsPDF) 2.5.1, loaded from cdnjs when you click, so it
+  needs an internet connection. Text uses subsets of DejaVu Sans (`public/fonts`, Bitstream
+  Vera licence) so Greek letters and symbols print correctly.
+
 ## Several circuits
 
 The **Circuits** tab adds further circuits around the main circuit C1. Each has its own
@@ -100,13 +120,14 @@ be confirmed against your copy of IEC 60287-2-1.
 - Different duct sizes per circuit, and several cables in one duct
 - Cyclic and emergency ratings (IEC 60853)
 - Finite-element calculation for non-standard geometries
-- Exporting the report as PDF (the browser's print works when the app runs locally)
 
 ## Layout
 
 ```
-src/engine/   IEC 60287 calculation engine (no UI dependencies)
-src/ui/       React components
+src/engine/   IEC 60287 calculation engine and temperature field (no UI dependencies)
+src/ui/       React components, drawings, heat map
+src/report/   calculation-sheet tables and the PDF report
+public/fonts/ font subsets embedded in the PDF
 tests/        engine tests (Vitest)
 scripts/      packs a single-file build for hosting
 ```

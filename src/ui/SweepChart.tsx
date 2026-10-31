@@ -48,6 +48,17 @@ const PARAMS: ParamDef[] = [
   },
 ];
 
+/** Round ticks that cover [min, max] (first ≤ min, last ≥ max). */
+function niceScale(min: number, max: number, count = 5): number[] {
+  const span = max - min || 1;
+  const raw = span / count;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => raw <= s) ?? 10 * mag;
+  const out: number[] = [];
+  for (let v = Math.floor(min / step) * step; v < max + step - 1e-9; v += step) out.push(Number(v.toPrecision(12)));
+  return out;
+}
+
 function niceTicks(min: number, max: number, count = 5): number[] {
   const span = max - min || 1;
   const raw = span / count;
@@ -97,8 +108,8 @@ export function SweepChart({ cable, inst, result }: Props) {
   const Is = data.map((d) => d.I);
   const yMax = Math.max(...Is, result.I);
   const yMin = Math.min(...Is, result.I);
-  const pad = (yMax - yMin) * 0.12 || yMax * 0.1;
-  const yTicks = niceTicks(Math.max(0, yMin - pad), yMax + pad, 5);
+  const pad = (yMax - yMin) * 0.06 || yMax * 0.1;
+  const yTicks = niceScale(Math.max(0, yMin - pad), yMax + pad, 5);
   const y0 = yTicks[0];
   const y1 = yTicks[yTicks.length - 1];
   const sx = (x: number) => M.left + ((x - x0) / (x1 - x0)) * (W - M.left - M.right);

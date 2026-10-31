@@ -1,5 +1,6 @@
 // Steady-state current rating of one three-phase circuit of single-core cables
 // — IEC 60287-1-1 1.4 (clause 4 in the 2023 edition).
+import type { FieldModel, FieldSource } from './field';
 import { deriveGeometry } from './geometry';
 import { conductorAC, capacitance, dielectricLoss, sheathLossFactors } from './losses';
 import {
@@ -890,6 +891,23 @@ function assemble(
   };
 }
 
+function makeField(m: Model, groups: { positions: Point[]; W: number; r: number }[]): FieldModel | undefined {
+  const inst = m.inst;
+  if (inst.type === 'air') return undefined;
+  const sources: FieldSource[] = groups.flatMap((g) => g.positions.map((p) => ({ x: p.x, y: p.y, W: g.W, r: g.r })));
+  const field: FieldModel = { thetaA: m.thetaA, rhoSoil: inst.soilRho, sources };
+  if (inst.type === 'ductbank')
+    field.bank = {
+      x: pick(inst.bank.centreX_m, 0) * 1000,
+      y: pick(inst.bank.centreDepth_m, inst.depth_m) * 1000,
+      w: inst.bank.width_m * 1000,
+      h: inst.bank.height_m * 1000,
+      rhoC: inst.bank.concreteRho,
+      unit: m.ext.bankUnit,
+    };
+  return field;
+}
+
 function caseLabel(inst: InstallationSpec): string {
   if (inst.type === 'air') return inst.air.solar ? 'Free air with solar radiation (1.4.4)' : 'Free air (1.4.1.1)';
   if (inst.type === 'ducts') return 'Ducts in soil (1.4.1.1)';
@@ -941,6 +959,10 @@ function calculateSystemRating(cable: CableSpec, inst: InstallationSpec): Rating
   });
   const result = assemble(m, chosen, conductorTemp, label, [{ label, I: chosen.I }], warnings, notes);
   result.system = { mode: inst.ratingMode, circuits };
+  result.field = makeField(
+    m,
+    circuits.map((c) => ({ positions: c.positions, W: c.W, r: (c.ductD ?? c.De) / 2 })),
+  );
   return result;
 }
 
@@ -993,7 +1015,9 @@ export function calculateRating(cable: CableSpec, inst: InstallationSpec): Ratin
       conductorTemp = t.thetaC;
     }
   }
-  return assemble(mm, chosen, conductorTemp, governingCase, cases, warnings, notes);
+  const result = assemble(mm, chosen, conductorTemp, governingCase, cases, warnings, notes);
+  result.field = makeField(mm, [{ positions: mm.positions, W: result.losses.W, r: mm.objectD / 2 }]);
+  return result;
 }
 
 /**
