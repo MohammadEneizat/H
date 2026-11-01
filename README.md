@@ -61,37 +61,60 @@ one together with T4 of the hottest position, which is conservative.
   needs an internet connection. Text uses subsets of DejaVu Sans (`public/fonts`, Bitstream
   Vera licence) so Greek letters and symbols print correctly.
 
-## Trench layouts
+## Cross-section builder
 
 Choose **Trench layout** as the installation method to build the cross-section in a
-drag-and-drop editor next to the results:
+drag-and-drop editor next to the results. Start from a template or from scratch, then add,
+move, resize and reorder objects:
 
 - **Ground layers** from the surface down (topsoil, clay, sand…), each with its own
-  thermal resistivity. The bottom layer continues downwards.
-- **The trench**: width at the surface and at the bottom (sloped walls), depth, and
-  position. It can also be switched off for drilled crossings.
-- **Fill zones** inside the trench (sand bedding, cement-bound sand, concrete, excavated
-  soil…), **cover tiles** (polymer or concrete) and **warning tape**. The tape is drawn
-  only; it has no thermal effect.
-- **Circuits**: drag them into place, or type exact positions. Cables can lie directly in
-  the fill or in ducts.
+  thermal resistivity. The bottom layer continues downwards. Drag a boundary to change a
+  layer's thickness. The ground surface can be grass, paving or road.
+- **Shapes**, each filled with a material of its own resistivity:
+  - **Trench**: width at the bottom and at the surface (sloped walls), depth and position,
+    filled in horizontal **bands** (sand bedding, cement-bound sand, excavated soil…) from
+    the bottom up;
+  - **Rectangle** (a concrete encasement, a duct bank, a subbase);
+  - **Circle** (a bentonite-filled drilled bore);
+  - **Polygon** with corners you drag, add (click a mid-point handle) or type, for any
+    other outline.
+
+  Shapes are stacked in order: a later shape lies on top of an earlier one where they
+  overlap. **Bring forward / Send backward** changes the order.
+- **Cover tiles** (polymer or concrete) and **warning tape**. The tape is drawn only; it
+  has no thermal effect.
+- **Circuits**: drag them into place, or type exact positions. Each circuit has its own
+  formation, which can also be turned (**flat vertical**, or **trefoil point down**), and
+  can lie directly in the ground or in **ducts of its own size and material**.
+- **Heat sources**: district heating pipes, a parallel cable or any other buried pipe,
+  as a diameter and a heat output in W/m. They heat every circuit in both rating methods.
 - **Templates**: MV trench with two circuits in sand, HV trench with CBS backfill, road
-  crossing with ducts in concrete, and a 6 m deep drilled crossing (HDD).
+  crossing with ducts in concrete, a 6 m deep drilled crossing (HDD), and a trench next to
+  district heating pipes.
+
+Editing: undo and redo (Ctrl+Z, Ctrl+Y, also for every other input), duplicate (Ctrl+D),
+delete, arrow keys to nudge, snapping to 10, 50 or 100 mm or off, zoom (buttons or
+Ctrl + wheel), pan by dragging the ground, and an object list to select anything that is
+hard to reach. Labels and the temperature field can be switched off.
 
 Material resistivities default to typical values (concrete and PE from IEC 60287-2-1
 Table 1, the rest are typical design values). Replace them with measured site values.
 
-Every trench is rated in two ways, shown side by side:
+Every layout is rated in two ways, shown side by side:
 
-1. **IEC 60287**: the fill zone around the main circuit becomes a rectangular backfill
-   zone (IEC 60287-2-1 2.2.7.3, the duct-bank method), in the native layer at cable
-   depth. Other layers, tiles and sloped walls are not part of this method.
+1. **IEC 60287**: the shape that holds the whole main circuit becomes a rectangular
+   backfill zone (IEC 60287-2-1 2.2.7.3, the duct-bank method) in the native layer at
+   cable depth: a trench band or rectangle as it is, a circle as the square of equal
+   thermal effect, a polygon as its bounding box. Other layers, tiles, sloped walls and
+   other shapes are not part of this method; if no shape holds the whole circuit, uniform
+   ground is used and a note says so. Other circuits and heat sources are added by
+   superposition (IEC 60287-2-1 2.2.3.1).
 2. **Numerical 2D ground model** (`src/engine/numeric.ts`): a finite-volume model of the
    whole cross-section on a non-uniform grid, solved with conjugate gradients and an
    incomplete-Cholesky preconditioner (see IEC TR 62095 for numerical methods). Cables and
    ducts are highly conducting bodies; the ground surface and far boundaries are at
-   ambient. One solve per cable gives an influence matrix (rise at each cable per W/m in
-   each cable). The grid and boundary error is removed by comparing a reference solve in
+   ambient. One solve per cable and heat source gives an influence matrix (rise at each
+   cable per W/m in each cable or source). The grid and boundary error is removed by comparing a reference solve in
    uniform ground with the exact image solution. Cable losses, internal thermal
    resistances and the duct air gap still follow IEC 60287. The model runs in a Web
    Worker shortly after each change, and its temperature field is drawn in the editor.
@@ -101,15 +124,11 @@ Checks in `tests/numeric.test.ts`:
 - a rectangular backfill is within 4 % of the IEC formula;
 - touching cables are within 3 % of the IEC touching-group formula;
 - results converge as the grid is refined;
-- every template is within 5 % of the IEC method.
-
-## Cable route
-
-The **Route** tab builds the route as a chain of sections. Each section stores its own
-installation (any method, including trench layouts) and length. Choose *Edit* on a section
-to change it with the normal tabs and the trench editor. The results show the rating along
-the route with the bottleneck section highlighted. The route rating is the lowest section
-rating (IEC method), and the route is included in the PDF report and in the project file.
+- every template is within 5 % of the IEC method;
+- older trench files are converted to shapes, and each shape type maps to the IEC
+  backfill zone as described above;
+- turned formations, per-circuit ducts and heat sources give the expected positions and
+  temperature rises (a heat source is checked against the closed-form image formula).
 
 ## Several circuits
 
@@ -166,17 +185,15 @@ be confirmed against your copy of IEC 60287-2-1.
 ## Not covered yet
 
 - Three-core cables, armour (λ2, T2), pipe-type cables
-- Other heat sources (district heating pipes, etc.)
-- Different duct sizes per circuit, and several cables in one duct
+- Several cables in one duct
 - Soil drying-out in the numerical model, and longitudinal heat flow at short crossings
-- Cross-bonding layout and sheath standing voltages along the route
 - Cyclic and emergency ratings (IEC 60853)
 - Finite-element calculation for non-standard geometries
 
 ## Layout
 
 ```
-src/engine/   IEC 60287 engine, trench model, numerical ground model (no UI dependencies)
+src/engine/   IEC 60287 engine, cross-section model, numerical ground model (no UI dependencies)
 src/ui/       React components, drawings, heat map
 src/report/   calculation-sheet tables and the PDF report
 public/fonts/ font subsets embedded in the PDF

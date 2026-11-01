@@ -48,6 +48,8 @@ export interface RatingOptions {
    * (the duct air gap and duct wall stay as IEC).
    */
   numericF?: number[][];
+  /** Numerical influence of the heat sources: rise at cable p per W/m in source s */
+  numericSourceF?: number[][];
 }
 
 const pick = (v: number | null | undefined, fallback: number): number =>
@@ -170,7 +172,9 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
 
   const depth = inst.depth_m * 1000;
   const x0 = inst.type === 'air' ? 0 : (inst.circuitX_m ?? 0) * 1000;
-  const positions = circuitPositions(formation, s, inst.type === 'air' ? 0 : depth).map((p) => ({
+  const rotated = inst.type !== 'air' && !!inst.rotated;
+  if (rotated) notes.push(formation === 'flat' ? 'Flat formation laid vertically.' : 'Trefoil laid with the point down.');
+  const positions = circuitPositions(formation, s, inst.type === 'air' ? 0 : depth, rotated).map((p) => ({
     x: p.x + x0,
     y: p.y,
   }));
@@ -341,7 +345,7 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
       }
       if (Math.max(zone.w, zone.h) / Math.min(zone.w, zone.h) >= 3)
         warnings.push(`The equivalent-radius formula for the ${zone.name} is given for a side ratio below 3.`);
-      const gT = groupT4PerCable(zone.rho, D, positions, formation, touching, depth);
+      const gT = groupT4PerCable(zone.rho, D, positions, formation, touching && !rotated, depth);
       const rb = ductBankRadius(zone.w, zone.h);
       if (zone.y / rb <= 1) errors.push(`The ${zone.name} is too shallow for its size.`);
       bankUnit = ductBankCorrection(1, inst.soilRho, zone.rho, zone.y, rb);
@@ -351,7 +355,7 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
       method = `${zone.strict ? 'Duct bank' : `Backfill (${zone.name})`} — ${gT.method}, with ρ = ${zone.rho} K·m/W, plus N/2π·(ρe − ρc)·ln(u + √(u² − 1)), u = LG/rb, rb = ${rb.toFixed(0)} mm`;
       hottest = gT.hottest;
     } else {
-      const gT = groupT4PerCable(inst.soilRho, D, positions, formation, touching, depth);
+      const gT = groupT4PerCable(inst.soilRho, D, positions, formation, touching && !rotated, depth);
       perCable = gT.T4.map((t) => T4pp + t);
       method = ducted ? `Ducts in soil — ${gT.method}` : gT.method;
       hottest = gT.hottest;
@@ -659,16 +663,25 @@ function temperatureAt(m: Model, I: number, soil: SoilCase, B: number[] = ZERO3)
 // Several circuits
 // ---------------------------------------------------------------------------------------
 
-/** True when the other circuits take part in the calculation. */
+/** True when other circuits or heat sources take part in the calculation. */
 export function hasOtherCircuits(inst: InstallationSpec): boolean {
-  return inst.type !== 'air' && Array.isArray(inst.circuits) && inst.circuits.length > 0;
+  return (
+    inst.type !== 'air' &&
+    ((Array.isArray(inst.circuits) && inst.circuits.length > 0) || (Array.isArray(inst.heatSources) && inst.heatSources.length > 0))
+  );
 }
 
 function circuitInstallation(inst: InstallationSpec, c: CircuitSpec | null): InstallationSpec {
   const bank = { ...inst.bank, centreDepth_m: pick(inst.bank.centreDepth_m, inst.depth_m) };
   if (!c) return { ...inst, bank, soilModel: 'moist', circuitX_m: inst.mainX_m ?? 0, circuits: [] };
+  // Each circuit may be direct or in its own ducts (buried, not in a duct bank)
+  const own = c.ducted !== undefined && (inst.type === 'direct' || inst.type === 'ducts');
+  const type = own ? (c.ducted ? 'ducts' : 'direct') : inst.type;
   return {
     ...inst,
+    type,
+    duct: c.duct ? { ...inst.duct, ...c.duct } : inst.duct,
+    rotated: !!c.rotated,
     bank,
     soilModel: 'moist',
     formation: c.formation,
@@ -701,10 +714,10 @@ interface SystemSolution {
   iterations: number;
 }
 
-function couplingRises(circs: SysCircuit[], W: number[], F?: number[][]): number[][] {
+function couplingRises(circs: SysCircuit[], W: number[], F?: number[][], Bsrc?: number[][]): number[][] {
   return circs.map((c, ci) =>
     c.m.positions.map((p, pi) => {
-      let sum = 0;
+      let sum = Bsrc ? Bsrc[ci][pi] : 0;
       circs.forEach((o, oi) => {
         if (oi === ci) return;
         o.m.positions.forEach((q, qi) => {
@@ -746,6 +759,7 @@ function solveSystem(
   inst: InstallationSpec,
   mainCurrent?: number,
   F?: number[][],
+  SF?: number[][],
 ): SystemSolution {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -787,6 +801,24 @@ function solveSystem(
       );
       if (clash) errors.push(`${ca.name} and ${cb.name} overlap. Move the circuits further apart.`);
     }
+
+  // Other heat sources (district heating pipes and the like)
+  const sources = (inst.heatSources ?? []).map((h) => ({ name: h.name || 'Heat source', x: h.x_m * 1000, y: h.depth_m * 1000, r: h.diameter_mm / 2, W: h.W }));
+  sources.forEach((h) => {
+    if (!(h.r > 0)) errors.push(`${h.name}: enter the diameter.`);
+    else if (h.y - h.r <= 0) errors.push(`${h.name} is not fully below ground.`);
+    if (!(h.W >= 0)) errors.push(`${h.name}: enter the heat given off (W/m).`);
+    circs.forEach((c) => {
+      if (c.m.positions.some((p) => Math.hypot(p.x - h.x, p.y - h.y) < h.r + c.m.objectD / 2 - 1e-6))
+        errors.push(`${h.name} overlaps ${c.name}. Move it further away.`);
+    });
+  });
+  if (SF && SF.length !== circs.length * 3) errors.push('The numerical model does not match the heat sources.');
+  const Bsrc = circs.map((c, ci) =>
+    c.m.positions.map((p, pi) =>
+      sources.reduce((a, h, si) => a + h.W * (SF ? SF[ci * 3 + pi][si] : mutualHeatingFactor(inst.soilRho, p, h)), 0),
+    ),
+  );
   if (errors.length || circs[0].m.errors.length)
     return { errors: [...circs[0].m.errors, ...errors], warnings, circuits: circs, B: circs.map(() => ZERO3), iterations: 0 };
   if (F) {
@@ -807,7 +839,7 @@ function solveSystem(
   let it = 0;
   for (it = 1; it <= 2000; it++) {
     const W = circs.map((c) => circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta).W);
-    B = couplingRises(circs, W, F);
+    B = couplingRises(circs, W, F, Bsrc);
     let change = 0;
     const newI = circs.map((c) => c.I);
     const rated = circs.map((c, i) => ({ c, i })).filter(({ c }) => c.load === 'rated');
@@ -843,7 +875,7 @@ function solveSystem(
     if (change < 1e-11) break;
   }
   const W = circs.map((c) => circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta).W);
-  B = couplingRises(circs, W, F);
+  B = couplingRises(circs, W, F, Bsrc);
   return { errors, warnings, circuits: circs, B, iterations: it };
 }
 
@@ -863,6 +895,7 @@ function circuitResults(sol: SystemSolution): CircuitResult[] {
       positions: c.m.positions,
       De: c.m.geometry.De,
       ductD: inDucts ? c.m.inst.duct.outerD_mm : undefined,
+      ductInnerD: inDucts ? c.m.inst.duct.innerD_mm : undefined,
       dc: c.m.geometry.dc,
       hottest: st.hottest,
     };
@@ -976,29 +1009,37 @@ function caseLabel(inst: InstallationSpec): string {
 }
 
 function calculateSystemRating(cable: CableSpec, inst: InstallationSpec, opts: RatingOptions): RatingResult {
-  const sol = solveSystem(cable, inst, undefined, opts.numericF);
+  const sol = solveSystem(cable, inst, undefined, opts.numericF, opts.numericSourceF);
   const main = sol.circuits[0];
   const m = main.m;
   const notes = [...m.notes];
   const warnings = [...m.warnings, ...sol.warnings];
   if (sol.errors.length) return failResult(m, sol.errors, warnings, notes);
 
+  const nSources = inst.heatSources?.length ?? 0;
+  const several = sol.circuits.length > 1;
   if (inst.type === 'direct' && inst.soilModel !== 'moist')
     warnings.push(
-      'Soil drying-out is only defined for a single circuit (IEC 60287-1-1 1.4.2), so moist soil is used with several circuits.',
+      'Soil drying-out is only defined for a single circuit without other heat sources (IEC 60287-1-1 1.4.2), so moist soil is used.',
     );
-  notes.push(
-    opts.numericF
-      ? 'Heating between circuits from the numerical model: each cable’s permissible rise is reduced by the rise caused by the other circuits.'
-      : 'Heating between circuits by superposition, IEC 60287-2-1 2.2.3.1: each cable’s permissible rise is reduced by the rise caused by the other circuits.',
-  );
-  notes.push(
-    inst.ratingMode === 'equal-current'
-      ? 'All rated circuits carry the same current; it is limited by the hottest circuit.'
-      : 'Each rated circuit is loaded until its own hottest conductor reaches its maximum temperature.',
-  );
+  if (several)
+    notes.push(
+      opts.numericF
+        ? 'Heating between circuits from the numerical model: each cable’s permissible rise is reduced by the rise caused by the other circuits.'
+        : 'Heating between circuits by superposition, IEC 60287-2-1 2.2.3.1: each cable’s permissible rise is reduced by the rise caused by the other circuits.',
+    );
+  if (nSources)
+    notes.push(
+      `${nSources} other heat source${nSources > 1 ? 's' : ''} (${inst.heatSources!.reduce((a, h) => a + h.W, 0)} W/m in total): their temperature rise at each cable is taken off its permissible rise${opts.numericF ? ' (numerical model)' : `, by superposition in ground of ρ ${inst.soilRho} K·m/W (IEC 60287-2-1 2.2.3.1)`}.`,
+    );
+  if (several)
+    notes.push(
+      inst.ratingMode === 'equal-current'
+        ? 'All rated circuits carry the same current; it is limited by the hottest circuit.'
+        : 'Each rated circuit is loaded until its own hottest conductor reaches its maximum temperature.',
+    );
 
-  const label = `${caseLabel(inst)}, ${sol.circuits.length} circuits`;
+  const label = `${caseLabel(inst)}${several ? `, ${sol.circuits.length} circuits` : ''}${nSources ? `, ${nSources} heat source${nSources > 1 ? 's' : ''}` : ''}`;
   let chosen: RatingState;
   let conductorTemp: number;
   const B = sol.B[0];
@@ -1023,15 +1064,17 @@ function calculateSystemRating(cable: CableSpec, inst: InstallationSpec, opts: R
   result.system = { mode: inst.ratingMode, circuits };
   result.field = opts.numericF
     ? undefined
-    : makeField(
-        m,
-        circuits.map((c) => ({ positions: c.positions, W: c.W, r: (c.ductD ?? c.De) / 2 })),
-      );
+    : makeField(m, [
+        ...circuits.map((c) => ({ positions: c.positions, W: c.W, r: (c.ductD ?? c.De) / 2 })),
+        ...(inst.heatSources ?? []).map((h) => ({ positions: [{ x: h.x_m * 1000, y: h.depth_m * 1000 }], W: h.W, r: h.diameter_mm / 2 })),
+      ]);
   return result;
 }
 
 /** Permissible continuous current of the main circuit (100 % load factor). */
 export function calculateRating(cable: CableSpec, inst: InstallationSpec, opts: RatingOptions = {}): RatingResult {
+  // Heat sources belong to the cross-section layout
+  if (inst.type !== 'trench' && !inst.fromLayout && inst.heatSources?.length) inst = { ...inst, heatSources: [] };
   if (inst.type === 'trench') {
     const t = trenchToIec(inst);
     const r = calculateRating(cable, t.iec, opts);
@@ -1042,7 +1085,10 @@ export function calculateRating(cable: CableSpec, inst: InstallationSpec, opts: 
       : t.iec.backfill
         ? 'Trench, IEC backfill method (1.4.1.1)'
         : 'Trench, IEC uniform ground (1.4.1.1)';
-    const extra = r.system ? `, ${r.system.circuits.length} circuits` : '';
+    const nS = inst.heatSources?.length ?? 0;
+    const extra =
+      (r.system && r.system.circuits.length > 1 ? `, ${r.system.circuits.length} circuits` : '') +
+      (nS ? `, ${nS} heat source${nS > 1 ? 's' : ''}` : '');
     if (r.ok) {
       r.governingCase = label + extra;
       r.cases = r.cases.map((c, i) => (i === 0 ? { ...c, label: label + extra } : c));
@@ -1116,6 +1162,7 @@ export function calculateTemperature(
   opts: RatingOptions = {},
 ): TemperatureResult {
   if (inst.type === 'trench') return calculateTemperature(cable, trenchToIec(inst).iec, I, opts);
+  if (!inst.fromLayout && inst.heatSources?.length) inst = { ...inst, heatSources: [] };
   const empty = (errors: string[]): TemperatureResult => ({
     ok: false,
     errors,
@@ -1135,13 +1182,13 @@ export function calculateTemperature(
   let soil: SoilCase = inst.type === 'direct' && inst.soilModel === 'two-zone' ? 'two-zone' : 'moist';
   if (hasOtherCircuits(inst)) {
     // Others at their rating with the main circuit rated, then the main circuit at I.
-    const rated = solveSystem(cable, inst, undefined, opts.numericF);
+    const rated = solveSystem(cable, inst, undefined, opts.numericF, opts.numericSourceF);
     if (rated.errors.length) return empty(rated.errors);
     const fixedInst: InstallationSpec = {
       ...inst,
       circuits: inst.circuits.map((c, i) => ({ ...c, load: 'fixed', current_A: rated.circuits[i + 1].I })),
     };
-    const sol = solveSystem(cable, fixedInst, I, opts.numericF);
+    const sol = solveSystem(cable, fixedInst, I, opts.numericF, opts.numericSourceF);
     if (sol.errors.length) return empty(sol.errors);
     m = sol.circuits[0].m;
     B = sol.B[0];

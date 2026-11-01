@@ -1,13 +1,11 @@
 // PDF report: A4, generated in the browser with jsPDF (loaded on demand from cdnjs).
 import React from 'react';
 import {
-  calculateRating,
   numericRating,
   sweepRating,
   type CableSpec,
   type InstallationSpec,
   type RatingResult,
-  type RouteSpec,
 } from '../engine';
 import {
   AirSvg,
@@ -22,7 +20,7 @@ import {
 import { amps, fmt } from '../ui/format';
 import { PALETTES } from '../ui/theme';
 import { svgMarkup, svgToPng } from './render';
-import { calcSections, inputSections, summaryChips, typeLabel } from './sections';
+import { calcSections, inputSections, summaryChips } from './sections';
 import type { NumericData } from '../ui/useNumeric';
 import { TrenchSvg, trenchHeat, trenchScene, type TrenchScene } from '../ui/TrenchEditor';
 
@@ -303,12 +301,10 @@ export interface ReportInput {
   result: RatingResult;
   /** Numerical model result for a trench layout, if available */
   numeric?: NumericData | null;
-  /** Cable route, if any */
-  route?: RouteSpec;
 }
 
 /** Builds the PDF report and returns it as a Blob. */
-export async function buildPdfReport({ cable, inst, result: r, numeric, route }: ReportInput): Promise<Blob> {
+export async function buildPdfReport({ cable, inst, result: r, numeric }: ReportInput): Promise<Blob> {
   if (!r.ok) throw new Error('Complete the inputs so the rating can be calculated first.');
   const [JsPDF, regular, bold] = await Promise.all([loadJsPdf(), fontBase64(FONT_REGULAR), fontBase64(FONT_BOLD)]);
   const doc: Doc = new JsPDF({ unit: 'mm', format: 'a4', compress: true });
@@ -377,7 +373,7 @@ export async function buildPdfReport({ cable, inst, result: r, numeric, route }:
   doc.rect(w.x0, boxY, w.width, 0.9, 'F');
   w.font(6.8, true, COL.ink3);
   doc.text(
-    (r.system ? 'MAIN CIRCUIT C1 · PERMISSIBLE CURRENT PER PHASE' : 'PERMISSIBLE CURRENT PER PHASE'),
+    (r.system && r.system.circuits.length > 1 ? 'MAIN CIRCUIT C1 · PERMISSIBLE CURRENT PER PHASE' : 'PERMISSIBLE CURRENT PER PHASE'),
     w.x0 + 5,
     boxY + 4.5,
     { baseline: 'top', charSpace: 0.3 },
@@ -416,7 +412,7 @@ export async function buildPdfReport({ cable, inst, result: r, numeric, route }:
   doc.text(summaryChips(inst, r).join('   ·   '), w.x0, w.y, { baseline: 'top', maxWidth: w.width });
   w.y += 7;
 
-  if (r.system) {
+  if (r.system && r.system.circuits.length > 1) {
     w.heading('All circuits');
     w.table(
       [
@@ -544,7 +540,7 @@ export async function buildPdfReport({ cable, inst, result: r, numeric, route }:
       w.y += 9;
     }
     w.para(
-      'Trench cross-section to scale with ground layers, fill zones, cover tiles and warning tape. The temperature field is the numerical model at its own rating; the IEC rating treats the fill zone around the cables as a backfill rectangle.',
+      'Cross-section to scale with ground layers, trenches and other shapes, cover tiles, warning tape and heat sources. The temperature field is the numerical model at its own rating; the IEC rating treats the shape around the main circuit as a backfill rectangle.',
       6.8,
       COL.ink3,
     );
@@ -567,88 +563,6 @@ export async function buildPdfReport({ cable, inst, result: r, numeric, route }:
         { head: 'Value', w: w.width - 62 },
       ],
       sec.rows,
-    );
-  }
-
-  // ---- Route ----
-  if (route && route.sections.length) {
-    let chain = 0;
-    const rows = route.sections.map((sec, i) => {
-      const from = chain;
-      chain += Math.max(0, sec.length_m || 0);
-      const rr = calculateRating(cable, sec.inst);
-      return { sec, i, from, to: chain, I: rr.ok ? rr.I : NaN };
-    });
-    const valid = rows.filter((x) => Number.isFinite(x.I));
-    const minI = valid.length ? Math.min(...valid.map((x) => x.I)) : NaN;
-    const bottleneck = valid.find((x) => x.I === minI);
-    const chartH2 = 52;
-    w.ensure(chartH2 + 40);
-    w.heading('Cable route');
-    w.para(
-      Number.isFinite(minI) && bottleneck
-        ? `Route rating ${amps(minI)} A, limited by section ${bottleneck.i + 1} (${bottleneck.sec.name}). ${rows.length} sections, ${Math.round(chain).toLocaleString('en-GB')} m. Ratings by the IEC method.`
-        : 'No section could be rated.',
-      7.6,
-      COL.ink,
-    );
-    // bar profile
-    const x0 = w.x0 + 11;
-    const x1 = w.x1 - 2;
-    const yTop = w.y + 4;
-    const yBase = w.y + chartH2 - 8;
-    const maxI = Math.max(...valid.map((x) => x.I), 1);
-    const ticks = niceScale(0, maxI * 1.08, 4);
-    const top = ticks[ticks.length - 1];
-    const sy = (v: number) => yBase - (v / top) * (yBase - yTop);
-    const sx = (v: number) => x0 + (chain > 0 ? (v / chain) * (x1 - x0) : 0);
-    doc.setLineWidth(0.15);
-    doc.setDrawColor(COL.line2);
-    w.font(6.5, false, COL.ink3);
-    for (const tk of ticks) {
-      doc.line(x0, sy(tk), x1, sy(tk));
-      doc.text(amps(tk), x0 - 1.5, sy(tk), { baseline: 'middle', align: 'right' });
-    }
-    for (const row of rows) {
-      if (!Number.isFinite(row.I)) continue;
-      const bx = sx(row.from) + 0.3;
-      const bw = Math.max(0.6, sx(row.to) - sx(row.from) - 0.6);
-      doc.setFillColor(row === bottleneck ? COL.accent : '#b9c1c8');
-      doc.rect(bx, sy(row.I), bw, yBase - sy(row.I), 'F');
-      w.font(6.3, false, COL.ink3);
-      if (bw > 4) doc.text(String(row.i + 1), bx + bw / 2, yBase + 1.5, { baseline: 'top', align: 'center' });
-      if (bw > 9) {
-        w.font(6.3, true);
-        doc.text(amps(row.I), bx + bw / 2, sy(row.I) - 1, { baseline: 'bottom', align: 'center' });
-      }
-    }
-    if (Number.isFinite(minI)) {
-      doc.setDrawColor(COL.accent);
-      doc.setLineDashPattern([1.2, 0.8], 0);
-      doc.line(x0, sy(minI), x1, sy(minI));
-      doc.setLineDashPattern([], 0);
-    }
-    w.font(6.5, false, COL.ink3);
-    doc.text('Chainage, sections numbered', x1, yBase + 5, { baseline: 'top', align: 'right' });
-    w.y += chartH2 + 2;
-    w.table(
-      [
-        { head: '#', w: 8 },
-        { head: 'Section', w: 62 },
-        { head: 'Installation', w: 32 },
-        { head: 'Chainage', w: 30, align: 'right' },
-        { head: 'Length', w: 20, align: 'right' },
-        { head: 'Rating', w: w.width - 152, align: 'right', bold: true },
-      ],
-      rows.map((x) => [
-        String(x.i + 1),
-        x.sec.name,
-        typeLabel[x.sec.inst.type],
-        `${Math.round(x.from).toLocaleString('en-GB')}–${Math.round(x.to).toLocaleString('en-GB')} m`,
-        `${Math.round(x.sec.length_m).toLocaleString('en-GB')} m`,
-        Number.isFinite(x.I) ? `${amps(x.I)} A` : '–',
-      ]),
-      { highlight: (i) => rows[i] === bottleneck },
     );
   }
 

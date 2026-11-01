@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { calculateTemperature, type CableSpec, type InstallationSpec, type RatingResult, type RouteSpec } from '../engine';
+import { calculateTemperature, numericOptions, type CableSpec, type InstallationSpec, type RatingResult } from '../engine';
 import { buildPdfReport } from '../report/pdf';
 import { calcSections, summaryChips, type Row } from '../report/sections';
 import { CableSection, InstallationView } from './Drawing';
@@ -16,8 +16,10 @@ interface Props {
   inst: InstallationSpec;
   result: RatingResult;
   onInstChange: (i: InstallationSpec) => void;
-  route: RouteSpec;
-  routeCard?: React.ReactNode;
+  undo?: () => void;
+  redo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
 
@@ -64,21 +66,21 @@ function CalcTableInner({ title, rows }: { title: string; rows: Row[] }) {
   );
 }
 
-export function Results({ cable, inst, result: r, onInstChange, route, routeCard }: Props) {
+export function Results({ cable, inst, result: r, onInstChange, undo, redo, canUndo, canRedo }: Props) {
   const pal = PALETTES[useThemeMode()];
   const num = useNumeric(cable, inst, r);
   const trench = inst.type === 'trench';
   const numOk = trench && num.fresh && !!num.data?.result.ok;
   const numTempAtIec = useMemo(
     () =>
-      numOk && r.ok ? calculateTemperature(cable, inst, r.I, { numericF: num.data!.numeric.F }) : null,
+      numOk && r.ok ? calculateTemperature(cable, inst, r.I, numericOptions(inst, num.data!.numeric)) : null,
     [numOk, num.data, cable, inst, r],
   );
   const [report, setReport] = useState<{ busy: boolean; msg: string }>({ busy: false, msg: '' });
   const makeReport = async () => {
     setReport({ busy: true, msg: 'Preparing the PDF…' });
     try {
-      const blob = await buildPdfReport({ cable, inst, result: r, numeric: numOk ? num.data : null, route });
+      const blob = await buildPdfReport({ cable, inst, result: r, numeric: numOk ? num.data : null });
       const outcome = await saveFile(`${safeName(cable.name)}_IEC60287_rating.pdf`, blob);
       setReport({ busy: false, msg: saveMessage(outcome, 'PDF report') });
     } catch (e) {
@@ -119,12 +121,9 @@ export function Results({ cable, inst, result: r, onInstChange, route, routeCard
     <div className="results">
       <section className="card summary" aria-live="polite">
         <div className="summary-main">
-          {route.activeId && (
-            <p className="editing-banner">
-              Editing route section: <strong>{route.sections.find((x) => x.id === route.activeId)?.name}</strong>
-            </p>
-          )}
-          <p className="eyebrow">{r.system ? 'Main circuit C1 · permissible current per phase' : 'Permissible current per phase'}</p>
+          <p className="eyebrow">
+            {r.system && r.system.circuits.length > 1 ? 'Main circuit C1 · permissible current per phase' : 'Permissible current per phase'}
+          </p>
           <p className="hero-figure">
             {amps(r.I)}
             <span className="hero-unit">A</span>
@@ -220,7 +219,7 @@ export function Results({ cable, inst, result: r, onInstChange, route, routeCard
         </div>
       </section>
 
-      {r.system && (
+      {r.system && r.system.circuits.length > 1 && (
         <section className="card" aria-labelledby="circuits-title">
           <header className="card-head">
             <div>
@@ -303,9 +302,18 @@ export function Results({ cable, inst, result: r, onInstChange, route, routeCard
         </section>
       )}
 
-      {routeCard}
-
-      {trench && <TrenchEditor cable={cable} inst={inst} iec={r} num={num} pal={pal} onChange={onInstChange} />}
+      {trench && <TrenchEditor
+          cable={cable}
+          inst={inst}
+          iec={r}
+          num={num}
+          pal={pal}
+          onChange={onInstChange}
+          undo={undo}
+          redo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+        />}
 
       <section className={`card drawings${trench ? ' drawings-cable-only' : ''}`} aria-label="Drawings">
         <div className="drawing-cell">

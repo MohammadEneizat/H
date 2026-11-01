@@ -2,19 +2,27 @@ import React, { useId, useMemo, useRef, useState } from 'react';
 import {
   GROUND,
   TRENCH_TEMPLATES,
+  band as makeBand,
+  circleShape,
   deriveGeometry,
   layerBoundaries,
+  polygonShape,
+  rectShape,
+  shapeBounds,
   trenchHalfWidth,
+  trenchShape,
+  uid,
   type CableGeometry,
   type CableSpec,
   type CircuitSpec,
   type GroundMaterial,
+  type GroundShape,
+  type HeatSource,
   type InstallationSpec,
   type RatingResult,
   type SoilLayer,
   type TrenchSlab,
   type TrenchSpec,
-  type TrenchZone,
 } from '../engine';
 import { CableGlyph, GroundDefs, HeatLegend, HeatOverlay, metalOf } from './Drawing';
 import { NumField, SelectField, Segmented, TextField, Toggle } from './fields';
@@ -25,16 +33,21 @@ import type { Palette } from './theme';
 import type { NumericState } from './useNumeric';
 
 const FONT = "'IBM Plex Sans', 'DejaVu Sans', system-ui, sans-serif";
-const uid = () => Math.random().toString(36).slice(2, 10);
-const r2 = (v: number) => Math.round(v * 100) / 100;
+const r3 = (v: number) => Math.round(v * 1000) / 1000;
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const materialOptions = (Object.keys(GROUND) as GroundMaterial[]).map((m) => ({ value: m, label: GROUND[m].label }));
+const ductOptions = [
+  { value: 'PE', label: 'PE / HDPE' },
+  { value: 'PVC', label: 'PVC' },
+  { value: 'earthenware', label: 'Earthenware' },
+] as const;
 
 export type Selection =
-  | { kind: 'trench' }
   | { kind: 'layer'; id: string }
-  | { kind: 'zone'; id: string }
+  | { kind: 'shape'; id: string; band?: string; vertex?: number }
   | { kind: 'slab'; id: string }
   | { kind: 'circuit'; index: number }
+  | { kind: 'source'; id: string }
   | null;
 
 interface Group {
@@ -42,6 +55,8 @@ interface Group {
   positions: { x: number; y: number }[];
   geo: CableGeometry;
   D: number;
+  ductD?: number;
+  ductInnerD?: number;
   hottest: number;
   temp: number;
   I: number;
@@ -57,25 +72,32 @@ export interface TrenchScene {
   numeric: boolean;
 }
 
-/** Layout and temperature scale of the trench drawing. */
+export interface View {
+  zoom: number;
+  panX: number;
+  panY: number;
+}
+
+/** Layout and temperature scale of the cross-section drawing. Region in mm. */
 export function trenchScene(
   cable: CableSpec,
   inst: InstallationSpec,
   iec: RatingResult,
   num: NumericState | null,
   pal: Palette,
+  view: View = { zoom: 1, panX: 0, panY: 0 },
 ): TrenchScene | null {
   const t = inst.trench;
   if (!t || !iec.ok) return null;
   const useNum = !!num?.fresh && !!num.data?.result.ok;
   const r = useNum ? num!.data!.result : iec;
-  const ducted = t.ducted;
   const base = r.system?.circuits ?? [
     {
       name: 'C1',
       positions: r.positions,
       De: r.geometry.De,
-      ductD: ducted ? inst.duct.outerD_mm : undefined,
+      ductD: t.ducted ? inst.duct.outerD_mm : undefined,
+      ductInnerD: t.ducted ? inst.duct.innerD_mm : undefined,
       hottest: r.thermal.t4.hottest,
       hottestTemp: r.temperatures.conductor,
       I: r.I,
@@ -88,6 +110,8 @@ export function trenchScene(
       positions: c.positions,
       geo: i === 0 ? iec.geometry : deriveGeometry(cab).geometry,
       D: c.ductD ?? c.De,
+      ductD: c.ductD,
+      ductInnerD: c.ductInnerD,
       hottest: c.hottest,
       temp: c.hottestTemp,
       I: c.I,
@@ -95,23 +119,29 @@ export function trenchScene(
       cond: metalOf(pal, cab.conductor.material),
     };
   });
-  const pts = groups.flatMap((g) => g.positions.map((p) => ({ ...p, D: g.D })));
-  const cx = t.centreX_m * 1000;
-  let x0 = Math.min(...pts.map((p) => p.x - p.D / 2), t.present ? cx - (t.topWidth_m / 2) * 1000 : Infinity);
-  let x1 = Math.max(...pts.map((p) => p.x + p.D / 2), t.present ? cx + (t.topWidth_m / 2) * 1000 : -Infinity);
-  t.slabs.forEach((s) => {
-    x0 = Math.min(x0, (s.x_m - s.width_m / 2) * 1000);
-    x1 = Math.max(x1, (s.x_m + s.width_m / 2) * 1000);
+  // Bounding box of everything (mm)
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = 0;
+  const grow = (a: number, b: number, yb: number) => {
+    x0 = Math.min(x0, a);
+    x1 = Math.max(x1, b);
+    y1 = Math.max(y1, yb);
+  };
+  groups.forEach((g) => g.positions.forEach((p) => grow(p.x - g.D / 2, p.x + g.D / 2, p.y + g.D / 2)));
+  t.shapes.forEach((s) => {
+    const b = shapeBounds(s);
+    grow(b.x0 * 1000, b.x1 * 1000, b.y1 * 1000);
   });
-  const deepest = Math.max(...pts.map((p) => p.y + p.D / 2), t.present ? t.depth_m * 1000 : 0);
-  let y1 = deepest + Math.max(450, deepest * 0.3);
-  const padX = Math.max(600, (x1 - x0) * 0.35);
+  t.slabs.forEach((s) => grow((s.x_m - s.width_m / 2) * 1000, (s.x_m + s.width_m / 2) * 1000, (s.depth_m + s.thickness_m) * 1000));
+  (inst.heatSources ?? []).forEach((h) => grow(h.x_m * 1000 - h.diameter_mm / 2, h.x_m * 1000 + h.diameter_mm / 2, h.depth_m * 1000 + h.diameter_mm / 2));
+  y1 += Math.max(450, y1 * 0.3);
+  const padX = Math.max(600, (x1 - x0) * 0.3);
   x0 -= padX;
   x1 += padX;
-  let y0 = -Math.max(120, y1 * 0.06);
-  // keep a pleasant aspect ratio
-  const w = x1 - x0;
-  const h = y1 - y0;
+  let y0 = -Math.max(180, y1 * 0.09);
+  let w = x1 - x0;
+  let h = y1 - y0;
   if (w < h * 1.35) {
     const e = (h * 1.35 - w) / 2;
     x0 -= e;
@@ -119,17 +149,20 @@ export function trenchScene(
   } else if (w > h * 2.4) {
     y1 += w / 2.4 - h;
   }
-  y0 = -Math.max(120, (y1 - y0) * 0.06);
-  const region = { x0, y0, x1, y1 };
+  y0 = -Math.max(180, (y1 - y0) * 0.09);
+  // Zoom and pan
+  w = (x1 - x0) / view.zoom;
+  h = (y1 - y0) / view.zoom;
+  const cx = (x0 + x1) / 2 + view.panX;
+  const cy = (y0 + y1) / 2 + view.panY;
+  const region = { x0: cx - w / 2, x1: cx + w / 2, y0: cy - h / 2, y1: cy + h / 2 };
 
   let field: FieldSourceLike | null = null;
-  if (useNum) {
-    const bodies = num!.data!.numeric.objects;
-    field = { fn: num!.data!.field, sources: bodies };
-  } else if (iec.field) field = analyticField(iec.field);
+  if (useNum) field = { fn: num!.data!.field, sources: num!.data!.numeric.objects };
+  else if (iec.field) field = analyticField(iec.field);
   let heat: TrenchScene['heat'] = null;
   if (field) {
-    const probe = sampleField(field.fn, { ...region, y0: 0 }, 120, 90);
+    const probe = sampleField(field.fn, { ...region, y0: Math.max(0, region.y0) }, 120, 90);
     const fmax = gridMax(probe);
     const tMin = inst.ambient_C;
     if (Number.isFinite(fmax) && fmax > tMin + 0.5) {
@@ -142,18 +175,26 @@ export function trenchScene(
 }
 
 export function trenchHeat(scene: TrenchScene, pal: Palette): HeatLayer | null {
-  if (!scene.heat || !scene.field) return null;
+  if (!scene.heat || !scene.field || scene.region.y1 <= 0) return null;
   const { tMin, tMax, levels } = scene.heat;
-  return heatLayer(scene.field, { ...scene.region, y0: 0 }, 300, tMin, tMax, levels, pal.heat);
+  return heatLayer(scene.field, { ...scene.region, y0: Math.max(0, scene.region.y0) }, 300, tMin, tMax, levels, pal.heat);
 }
 
-interface DragHandlers {
-  start: (e: React.PointerEvent, kind: string, payload?: string | number) => void;
-  select: (s: Selection) => void;
+interface DragApi {
+  start: (e: React.PointerEvent, kind: string, a?: string | number, b?: string | number) => void;
   selection: Selection;
 }
 
-/** The trench drawing; interactive when `drag` is given. */
+/** Outline of a trench shape as SVG points (mm), between two depths (m). */
+function trenchPoints(s: GroundShape, top: number, bottom: number): string {
+  const hw = (y: number) => trenchHalfWidth(s, y) * 1000;
+  const cx = s.x_m * 1000;
+  const yt = top * 1000;
+  const yb = bottom * 1000;
+  return `${cx - hw(top)},${yt} ${cx + hw(top)},${yt} ${cx + hw(bottom)},${yb} ${cx - hw(bottom)},${yb}`;
+}
+
+/** The cross-section drawing; interactive when `drag` is given. */
 export function TrenchSvg({
   inst,
   scene,
@@ -161,6 +202,7 @@ export function TrenchSvg({
   pal,
   idPrefix,
   showHeat,
+  showLabels = true,
   drag,
 }: {
   inst: InstallationSpec;
@@ -169,23 +211,38 @@ export function TrenchSvg({
   pal: Palette;
   idPrefix: string;
   showHeat: boolean;
-  drag?: DragHandlers;
+  showLabels?: boolean;
+  drag?: DragApi;
 }) {
   const t = inst.trench!;
   const id = (s: string) => `${idPrefix}-${s}`;
-  const { region: R } = scene;
+  const R = scene.region;
   const W = R.x1 - R.x0;
   const sw = W / 600;
   const fs = W / 52;
   const tile = W / 26;
-  const cx = t.centreX_m * 1000;
-  const D = t.depth_m * 1000;
-  const hw = (y: number) => trenchHalfWidth(t, y / 1000) * 1000;
   const sel = drag?.selection;
-  const isSel = (k: string, v?: string | number) =>
-    !!sel && sel.kind === k && (v === undefined || ('id' in sel && sel.id === v) || ('index' in sel && sel.index === v));
+  const selShape = sel?.kind === 'shape' ? sel.id : null;
   const halo = { stroke: pal.halo, strokeWidth: fs * 0.25, paintOrder: 'stroke' as const };
-  const pe = drag ? undefined : ('none' as const);
+  const pat = (m: GroundMaterial) => `url(#${idPrefix}-m-${m})`;
+  const on = (kind: string, a?: string | number, b?: string | number) =>
+    drag ? { onPointerDown: (e: React.PointerEvent) => drag.start(e, kind, a, b) } : {};
+  const handle = (key: string, x: number, y: number, kind: string, cur: string, a?: string | number, b?: string | number, small = false) => (
+    <rect
+      key={key}
+      x={x - sw * (small ? 4 : 6)}
+      y={y - sw * (small ? 4 : 6)}
+      width={sw * (small ? 8 : 12)}
+      height={sw * (small ? 8 : 12)}
+      rx={small ? sw * 4 : 0}
+      fill={small ? pal.accent : pal.panel}
+      stroke={pal.accent}
+      strokeWidth={sw * 1.4}
+      className="drag"
+      style={{ cursor: cur }}
+      {...on(kind, a, b)}
+    />
+  );
 
   // Native layers
   let top = 0;
@@ -193,21 +250,167 @@ export function TrenchSvg({
     .map((l, i) => {
       const last = i === t.layers.length - 1;
       const bottom = last ? Math.max(R.y1, top) : top + l.thickness_m * 1000;
-      const out = { l, top, bottom: Math.min(bottom, R.y1), last: last || bottom >= R.y1 };
+      const out = { l, top, bottom: Math.min(bottom, Math.max(R.y1, top)), last: last || bottom >= R.y1 };
       top = bottom;
       return out;
     })
-    .filter((x) => x.top < R.y1);
-  const trenchPoly = (yt: number, yb: number) =>
-    `${cx - hw(yt)},${yt} ${cx + hw(yt)},${yt} ${cx + hw(yb)},${yb} ${cx - hw(yb)},${yb}`;
+    .filter((x) => x.top < R.y1 && x.bottom > Math.max(0, R.y0));
   const surfaceH = Math.max(sw * 5, (R.y1 - R.y0) * 0.012);
+
+  const shapeEl = (s: GroundShape) => {
+    const selected = selShape === s.id;
+    const stroke = selected ? pal.accent : pal.ink3;
+    const strokeWidth = sw * (selected ? 2.4 : 0.9);
+    const common = {
+      className: drag ? 'drag' : undefined,
+      style: { cursor: drag ? 'move' : undefined },
+      ...on('shape', s.id),
+    };
+    switch (s.kind) {
+      case 'trench':
+        return (
+          <g key={s.id}>
+            <polygon points={trenchPoints(s, s.y_m, s.y_m + s.height_m)} fill={pat(s.material)} {...common} />
+            {(s.bands ?? []).map((b) => {
+              const bt = Math.max(s.y_m, b.top_m);
+              const bb = Math.min(s.y_m + s.height_m, b.bottom_m);
+              if (bb <= bt) return null;
+              return <polygon key={b.id} points={trenchPoints(s, bt, bb)} fill={pat(b.material)} {...common} {...on('shape', s.id, b.id)} />;
+            })}
+            <polygon points={trenchPoints(s, s.y_m, s.y_m + s.height_m)} fill="none" stroke={stroke} strokeWidth={strokeWidth * 1.3} strokeDasharray={`${sw * 7} ${sw * 4}`} pointerEvents="none" />
+          </g>
+        );
+      case 'rect':
+        return (
+          <rect key={s.id} x={(s.x_m - s.width_m / 2) * 1000} y={s.y_m * 1000} width={s.width_m * 1000} height={s.height_m * 1000} fill={pat(s.material)} stroke={stroke} strokeWidth={strokeWidth} {...common} />
+        );
+      case 'circle':
+        return <circle key={s.id} cx={s.x_m * 1000} cy={s.y_m * 1000} r={(s.width_m / 2) * 1000} fill={pat(s.material)} stroke={stroke} strokeWidth={strokeWidth} {...common} />;
+      case 'polygon':
+        return (
+          <polygon key={s.id} points={(s.points ?? []).map(([x, y]) => `${x * 1000},${y * 1000}`).join(' ')} fill={pat(s.material)} stroke={stroke} strokeWidth={strokeWidth} {...common} />
+        );
+    }
+  };
+
+  // Circuit labels: positions first, so other labels can keep clear of them
+  const circLabels = (() => {
+    const order = scene.groups
+      .map((g, gi) => ({ gi, gx: g.positions.reduce((a, p) => a + p.x, 0) / 3 }))
+      .sort((a, b) => a.gx - b.gx);
+    const below = new Set<number>();
+    order.forEach((o, k) => {
+      if (k > 0 && o.gx - order[k - 1].gx < fs * 9 && !below.has(order[k - 1].gi)) below.add(o.gi);
+    });
+    return scene.groups.map((g, gi) => {
+      const xs = g.positions.map((p) => p.x);
+      const ys = g.positions.map((p) => p.y);
+      const bx0 = Math.min(...xs) - g.D / 2 - sw * 6;
+      const by0 = Math.min(...ys) - g.D / 2 - sw * 6;
+      const bw = Math.max(...xs) - Math.min(...xs) + g.D + sw * 12;
+      const bh = Math.max(...ys) - Math.min(...ys) + g.D + sw * 12;
+      const gx = xs.reduce((a, b) => a + b, 0) / 3;
+      const ly = below.has(gi) ? by0 + bh + fs * 1.1 : by0 - fs * 0.4;
+      const text = `${g.name} · ${amps(g.I)} A · ${fmt(g.temp, 0)} °C`;
+      const tw = text.length * fs * 0.56;
+      return { gi, bx0, by0, bw, bh, gx, ly, text, box: { x0: gx - tw / 2, x1: gx + tw / 2, y0: ly - fs, y1: ly + fs * 0.2 } };
+    });
+  })();
+  const clear = (x: number, y: number, text: string, size: number) => {
+    const b = { x0: x, x1: x + text.length * size * 0.56, y0: y - size, y1: y + size * 0.2 };
+    return circLabels.every((c) => b.x1 < c.box.x0 || b.x0 > c.box.x1 || b.y1 < c.box.y0 || b.y0 > c.box.y1);
+  };
+  const placeLabel = (key: string, x: number, yTop: number, yBottom: number, text: string) => {
+    const size = fs * 0.72;
+    const y = clear(x, yTop, text, size) ? yTop : clear(x, yBottom, text, size) ? yBottom : null;
+    if (y === null) return null;
+    return (
+      <text key={key} x={x} y={y} fontSize={size} fill={pal.ink} {...halo} pointerEvents="none">
+        {text}
+      </text>
+    );
+  };
+
+  const shapeLabel = (s: GroundShape) => {
+    const b = shapeBounds(s);
+    const out: React.ReactNode[] = [];
+    if ((b.y1 - b.y0) * 1000 > fs * 1.8 && (b.x1 - b.x0) * 1000 > fs * 5) {
+      const x = s.kind === 'trench' ? (s.x_m - trenchHalfWidth(s, s.y_m + 0.02)) * 1000 + fs * 0.4 : b.x0 * 1000 + fs * 0.4;
+      out.push(placeLabel('n', x, b.y0 * 1000 + fs * 1.2, b.y1 * 1000 - fs * 0.5, `${s.name} · ρ ${fmt(s.rho, 2)}`));
+    }
+    (s.bands ?? []).forEach((bd) => {
+      const bt = Math.max(s.y_m, bd.top_m);
+      const bb = Math.min(s.y_m + s.height_m, bd.bottom_m);
+      if ((bb - bt) * 1000 < fs * 1.6) return;
+      out.push(
+        placeLabel(bd.id, (s.x_m - trenchHalfWidth(s, bt + 0.01)) * 1000 + fs * 0.4, bt * 1000 + fs * 1.2, bb * 1000 - fs * 0.5, `${bd.name} · ρ ${fmt(bd.rho, 2)}`),
+      );
+    });
+    return <g key={`l${s.id}`}>{out}</g>;
+  };
+
+  // Shape handles for the selection
+  const handles: React.ReactNode[] = [];
+  const selected = selShape ? t.shapes.find((s) => s.id === selShape) : undefined;
+  if (drag && selected) {
+    const s = selected;
+    const X = (v: number) => v * 1000;
+    if (s.kind === 'rect') {
+      const [l, r, tp, bt] = [X(s.x_m - s.width_m / 2), X(s.x_m + s.width_m / 2), X(s.y_m), X(s.y_m + s.height_m)];
+      handles.push(
+        handle('nw', l, tp, 'rect-corner', 'nwse-resize', s.id, 0),
+        handle('ne', r, tp, 'rect-corner', 'nesw-resize', s.id, 1),
+        handle('se', r, bt, 'rect-corner', 'nwse-resize', s.id, 2),
+        handle('sw', l, bt, 'rect-corner', 'nesw-resize', s.id, 3),
+      );
+    } else if (s.kind === 'trench') {
+      const tw = (s.topWidth_m ?? s.width_m) / 2;
+      handles.push(
+        handle('tt', X(s.x_m + tw), X(s.y_m), 'trench-top', 'ew-resize', s.id),
+        handle('tc', X(s.x_m + s.width_m / 2), X(s.y_m + s.height_m), 'trench-corner', 'nwse-resize', s.id),
+      );
+      (s.bands ?? []).forEach((bd) => {
+        (['top', 'bottom'] as const).forEach((edge) => {
+          const y = edge === 'top' ? bd.top_m : bd.bottom_m;
+          if (y <= s.y_m + 1e-6 || y >= s.y_m + s.height_m - 1e-6) return;
+          const hw = trenchHalfWidth(s, y);
+          handles.push(
+            <line
+              key={`${bd.id}${edge}`}
+              x1={X(s.x_m - hw)}
+              y1={X(y)}
+              x2={X(s.x_m + hw)}
+              y2={X(y)}
+              stroke={sel?.kind === 'shape' && sel.band === bd.id ? pal.accent : 'transparent'}
+              strokeWidth={sw * 8}
+              strokeOpacity={sel?.kind === 'shape' && sel.band === bd.id ? 0.5 : 1}
+              className="drag"
+              style={{ cursor: 'ns-resize' }}
+              {...on(`band-${edge}`, s.id, bd.id)}
+            />,
+          );
+        });
+      });
+    } else if (s.kind === 'circle') {
+      handles.push(handle('cr', X(s.x_m + s.width_m / 2), X(s.y_m), 'circle-r', 'ew-resize', s.id));
+    } else if (s.kind === 'polygon' && s.points) {
+      const pts = s.points;
+      pts.forEach(([x, y], i) => {
+        const nx = pts[(i + 1) % pts.length];
+        handles.push(handle(`m${i}`, X((x + nx[0]) / 2), X((y + nx[1]) / 2), 'vertex-add', 'copy', s.id, i, true));
+      });
+      pts.forEach(([x, y], i) => handles.push(handle(`v${i}`, X(x), X(y), 'vertex', 'move', s.id, i)));
+    }
+  }
+
+  const dimTrench = selected?.kind === 'trench' ? selected : t.shapes.find((s) => s.kind === 'trench');
 
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
       viewBox={`${R.x0} ${R.y0} ${W} ${R.y1 - R.y0}`}
       role="img"
-      aria-label="Trench cross-section"
+      aria-label="Cross-section of the installation"
       fontFamily={FONT}
       className="trench-svg"
     >
@@ -219,38 +422,11 @@ export function TrenchSvg({
           <rect width={tile * 0.25} height={tile * 0.5} fill="#d6362a" />
         </pattern>
       </defs>
-      <rect x={R.x0} y={R.y0} width={W} height={-R.y0} fill={`url(#${id('sky')})`} />
+      <rect x={R.x0} y={R.y0} width={W} height={Math.max(0, -R.y0)} fill={`url(#${id('sky')})`} {...on('pan')} style={{ cursor: drag ? 'grab' : undefined }} />
       {layers.map(({ l, top: yt, bottom: yb }) => (
-        <rect
-          key={l.id}
-          x={R.x0}
-          y={yt}
-          width={W}
-          height={yb - yt}
-          fill={`url(#${idPrefix}-m-${l.material})`}
-          onPointerDown={drag ? () => drag.select({ kind: 'layer', id: l.id }) : undefined}
-          style={{ cursor: drag ? 'pointer' : undefined }}
-        />
+        <rect key={l.id} x={R.x0} y={yt} width={W} height={Math.max(0, yb - yt)} fill={pat(l.material)} {...on('pan', l.id)} style={{ cursor: drag ? 'grab' : undefined }} />
       ))}
-      {t.present && (
-        <g>
-          <polygon points={trenchPoly(0, D)} fill={pal.mode === 'light' ? '#ffffff' : '#000000'} opacity={0.12} pointerEvents="none" />
-          {t.zones.map((z) => {
-            const yt = Math.max(0, z.top_m * 1000);
-            const yb = Math.min(D, z.bottom_m * 1000);
-            if (yb <= yt) return null;
-            return (
-              <polygon
-                key={z.id}
-                points={trenchPoly(yt, yb)}
-                fill={`url(#${idPrefix}-m-${z.material})`}
-                onPointerDown={drag ? () => drag.select({ kind: 'zone', id: z.id }) : undefined}
-                style={{ cursor: drag ? 'pointer' : undefined }}
-              />
-            );
-          })}
-        </g>
-      )}
+      {t.shapes.map(shapeEl)}
       {t.surface === 'grass' ? (
         <g pointerEvents="none">
           <rect x={R.x0} y={-surfaceH} width={W} height={surfaceH * 1.2} fill={pal.grass} />
@@ -270,39 +446,52 @@ export function TrenchSvg({
       ) : (
         <rect x={R.x0} y={-surfaceH * 0.6} width={W} height={surfaceH * 0.8} fill={t.surface === 'asphalt' ? '#2f3236' : '#9c958b'} pointerEvents="none" />
       )}
-      {showHeat && heat && <g pointerEvents="none"><HeatOverlay layer={heat} pal={pal} fs={fs * 0.85} labels sw={sw * 1.2} imageOpacity={0.72} /></g>}
-      {t.present && (
-        <polyline
-          points={`${cx - hw(0)},0 ${cx - hw(D)},${D} ${cx + hw(D)},${D} ${cx + hw(0)},0`}
-          fill="none"
-          stroke={isSel('trench') ? pal.accent : pal.ink2}
-          strokeWidth={sw * (isSel('trench') ? 2.6 : 1.5)}
-          strokeDasharray={`${sw * 7} ${sw * 4}`}
-          onPointerDown={drag ? () => drag.select({ kind: 'trench' }) : undefined}
-          style={{ cursor: drag ? 'pointer' : undefined }}
-        />
+      {showHeat && heat && (
+        <g pointerEvents="none">
+          <HeatOverlay layer={heat} pal={pal} fs={fs * 0.85} labels sw={sw * 1.2} imageOpacity={0.72} />
+        </g>
       )}
       {/* tiles and tape */}
       {t.slabs.map((s) => {
+        const isSel = sel?.kind === 'slab' && sel.id === s.id;
         const x = (s.x_m - s.width_m / 2) * 1000;
         const y = s.depth_m * 1000;
         const w = s.width_m * 1000;
         const h = Math.max(s.thickness_m * 1000, s.kind === 'tape' ? sw * 3 : sw * 2);
-        const fill = s.kind === 'tape' ? `url(#${id('tape')})` : `url(#${idPrefix}-m-${s.rho >= 2 ? 'polymer' : 'concrete'})`;
         return (
-          <g key={s.id} pointerEvents={pe}>
+          <g key={s.id}>
             <rect
               x={x}
               y={y}
               width={w}
               height={h}
-              fill={fill}
-              stroke={isSel('slab', s.id) ? pal.accent : pal.ink2}
-              strokeWidth={sw * (isSel('slab', s.id) ? 2.2 : 0.8)}
-              onPointerDown={drag ? (e) => drag.start(e, 'slab', s.id) : undefined}
-              className={drag ? 'drag' : undefined} style={{ cursor: drag ? 'move' : undefined }}
+              fill={s.kind === 'tape' ? `url(#${id('tape')})` : pat(s.rho >= 2 ? 'polymer' : 'concrete')}
+              stroke={isSel ? pal.accent : pal.ink2}
+              strokeWidth={sw * (isSel ? 2.2 : 0.8)}
+              pointerEvents="none"
             />
-            {drag && <rect x={x} y={y - sw * 6} width={w} height={h + sw * 12} fill="transparent" onPointerDown={(e) => drag.start(e, 'slab', s.id)} className="drag" style={{ cursor: 'move' }} />}
+            {drag && <rect x={x} y={y - sw * 6} width={w} height={h + sw * 12} fill="transparent" className="drag" style={{ cursor: 'move' }} {...on('slab', s.id)} />}
+          </g>
+        );
+      })}
+      {/* other heat sources */}
+      {(inst.heatSources ?? []).map((hs, _k, all) => {
+        const isSel = sel?.kind === 'source' && sel.id === hs.id;
+        const x = hs.x_m * 1000;
+        const y = hs.depth_m * 1000;
+        const r = hs.diameter_mm / 2;
+        const sorted = [...all].sort((a, b) => a.x_m - b.x_m);
+        const pos = sorted.findIndex((q) => q.id === hs.id);
+        const below = pos % 2 === 1 && Math.abs(sorted[pos].x_m - sorted[pos - 1].x_m) * 1000 < fs * 9;
+        return (
+          <g key={hs.id}>
+            <circle cx={x} cy={y} r={r} fill="#22272b" stroke={isSel ? pal.accent : pal.jacketEdge} strokeWidth={sw * (isSel ? 3 : 1)} pointerEvents="none" />
+            <circle cx={x} cy={y} r={r * 0.86} fill="#e7b43c" pointerEvents="none" />
+            <circle cx={x} cy={y} r={r * 0.45} fill="#9aa3aa" stroke="#6b737a" strokeWidth={sw * 0.8} pointerEvents="none" />
+            <text x={x} y={below ? y + r + fs * 1.1 : y - r - fs * 0.4} fontSize={fs * 0.8} textAnchor="middle" fill={pal.ink} {...halo} pointerEvents="none">
+              {hs.name} · {fmt(hs.W, 0)} W/m
+            </text>
+            {drag && <circle cx={x} cy={y} r={r + sw * 4} fill="transparent" className="drag" style={{ cursor: 'move' }} {...on('source', hs.id)} />}
           </g>
         );
       })}
@@ -311,10 +500,10 @@ export function TrenchSvg({
         <g key={gi} pointerEvents="none">
           {g.positions.map((p, i) => (
             <g key={i}>
-              {t.ducted && (
+              {g.ductD && (
                 <>
-                  <circle cx={p.x} cy={p.y} r={inst.duct.outerD_mm / 2} fill={pal.duct} stroke={pal.ductEdge} strokeWidth={sw * 0.6} />
-                  <circle cx={p.x} cy={p.y} r={inst.duct.innerD_mm / 2} fill={pal.air} />
+                  <circle cx={p.x} cy={p.y} r={g.ductD / 2} fill={pal.duct} stroke={pal.ductEdge} strokeWidth={sw * 0.6} />
+                  <circle cx={p.x} cy={p.y} r={(g.ductInnerD ?? g.ductD * 0.9) / 2} fill={pal.air} />
                 </>
               )}
               <CableGlyph x={p.x} y={p.y} geo={g.geo} metal={g.metal} cond={g.cond} hot={gi === 0 && i === g.hottest} sw={sw} pal={pal} id={id} />
@@ -322,78 +511,64 @@ export function TrenchSvg({
           ))}
         </g>
       ))}
-      {/* circuit labels and hit areas */}
-      {(() => {
-        // Neighbouring circuits that are close get their labels alternately above and below
-        const order = scene.groups
-          .map((g, gi) => ({ gi, gx: g.positions.reduce((a, p) => a + p.x, 0) / 3 }))
-          .sort((a, b) => a.gx - b.gx);
-        const below = new Set<number>();
-        order.forEach((o, k) => {
-          if (k > 0 && o.gx - order[k - 1].gx < fs * 9 && !below.has(order[k - 1].gi)) below.add(o.gi);
-        });
-        return scene.groups.map((g, gi) => {
-          const xs = g.positions.map((p) => p.x);
-          const ys = g.positions.map((p) => p.y);
-          const bx0 = Math.min(...xs) - g.D / 2 - sw * 6;
-          const by0 = Math.min(...ys) - g.D / 2 - sw * 6;
-          const bw = Math.max(...xs) - Math.min(...xs) + g.D + sw * 12;
-          const bh = Math.max(...ys) - Math.min(...ys) + g.D + sw * 12;
-          const gx = xs.reduce((a, b) => a + b, 0) / 3;
-          const ly = below.has(gi) ? by0 + bh + fs * 1.1 : by0 - fs * 0.4;
-          return (
-            <g key={`h${gi}`}>
-              <text x={gx} y={ly} fontSize={fs} textAnchor="middle" fontWeight={600} fill={gi === 0 ? pal.accent : pal.ink} {...halo} pointerEvents="none">
-                {g.name} · {amps(g.I)} A · {fmt(g.temp, 0)} °C
-              </text>
-              {(drag || isSel('circuit', gi)) && (
-                <rect
-                  x={bx0}
-                  y={by0}
-                  width={bw}
-                  height={bh}
-                  rx={sw * 4}
-                  fill="transparent"
-                  stroke={isSel('circuit', gi) ? pal.accent : 'none'}
-                  strokeWidth={sw * 1.6}
-                  strokeDasharray={`${sw * 5} ${sw * 3}`}
-                  onPointerDown={drag ? (e) => drag.start(e, 'circuit', gi) : undefined}
-                  className={drag ? 'drag' : undefined}
-                  style={{ cursor: drag ? 'move' : undefined }}
-                />
-              )}
-            </g>
-          );
-        });
-      })()}
-      {/* labels: layers on the left, zones in the trench */}
-      {layers.map(({ l, top: yt, bottom: yb, last }) => (
-        <text key={`ll${l.id}`} x={R.x0 + fs * 0.5} y={Math.min(yb, yt + (last ? fs * 3 : (yb - yt) / 2 + fs * 0.35))} fontSize={fs * 0.8} fill={pal.ink} {...halo} pointerEvents="none">
+      {/* labels */}
+      {showLabels && layers.map(({ l, top: yt, bottom: yb, last }) => (
+        <text key={`ll${l.id}`} x={R.x0 + fs * 0.5} y={Math.min(yb, Math.max(yt, 0) + (last ? fs * 3 : (yb - Math.max(yt, 0)) / 2 + fs * 0.35))} fontSize={fs * 0.8} fill={pal.ink} {...halo} pointerEvents="none">
           {l.name} · ρ {fmt(l.rho, 2)}
         </text>
       ))}
-      {t.present &&
-        t.zones.map((z) => {
-          const yt = Math.max(0, z.top_m * 1000);
-          const yb = Math.min(D, z.bottom_m * 1000);
-          if (yb - yt < fs * 1.6) return null;
-          return (
-            <text key={`zl${z.id}`} x={cx - hw(yt) + fs * 0.4} y={yt + fs * 1.25} fontSize={fs * 0.75} fill={pal.ink} {...halo} pointerEvents="none">
-              {z.name} · ρ {fmt(z.rho, 2)}
+      {showLabels && t.shapes.map(shapeLabel)}
+      {/* circuit labels and hit areas */}
+      {circLabels.map(({ gi, bx0, by0, bw, bh, gx, ly, text }) => {
+        const isSel = sel?.kind === 'circuit' && sel.index === gi;
+        return (
+          <g key={`h${gi}`}>
+            <text x={gx} y={ly} fontSize={fs} textAnchor="middle" fontWeight={600} fill={gi === 0 ? pal.accent : pal.ink} {...halo} pointerEvents="none">
+              {text}
             </text>
-          );
-        })}
+            {(drag || isSel) && (
+              <rect
+                x={bx0}
+                y={by0}
+                width={bw}
+                height={bh}
+                rx={sw * 4}
+                fill="transparent"
+                stroke={isSel ? pal.accent : 'none'}
+                strokeWidth={sw * 1.6}
+                strokeDasharray={`${sw * 5} ${sw * 3}`}
+                className={drag ? 'drag' : undefined}
+                style={{ cursor: drag ? 'move' : undefined }}
+                {...on('circuit', gi)}
+              />
+            )}
+          </g>
+        );
+      })}
       {/* dimensions */}
-      {t.present && (
+      {dimTrench && (
         <g pointerEvents="none">
-          <line x1={cx - hw(0)} y1={-surfaceH * 3.2} x2={cx + hw(0)} y2={-surfaceH * 3.2} stroke={pal.ink2} strokeWidth={sw} markerStart={`url(#${id('arrow')})`} markerEnd={`url(#${id('arrow')})`} />
-          <text x={cx} y={-surfaceH * 3.2 - fs * 0.35} fontSize={fs * 0.8} textAnchor="middle" fill={pal.ink} {...halo}>
-            {fmt(t.topWidth_m, 2)} m
-          </text>
-          <line x1={cx + hw(D) + fs * 1.6} y1={0} x2={cx + hw(D) + fs * 1.6} y2={D} stroke={pal.ink2} strokeWidth={sw} markerStart={`url(#${id('arrow')})`} markerEnd={`url(#${id('arrow')})`} />
-          <text x={cx + hw(D) + fs * 2} y={D / 2} fontSize={fs * 0.8} fill={pal.ink} {...halo} dominantBaseline="middle">
-            {fmt(t.depth_m, 2)} m
-          </text>
+          {(() => {
+            const s = dimTrench;
+            const tw = (s.topWidth_m ?? s.width_m) * 1000;
+            const cx = s.x_m * 1000;
+            const yt = s.y_m * 1000;
+            const yb = (s.y_m + s.height_m) * 1000;
+            const xr = cx + Math.max(tw, s.width_m * 1000) / 2 + fs * 1.6;
+            const yd = yt - surfaceH * 3.2;
+            return (
+              <>
+                <line x1={cx - tw / 2} y1={yd} x2={cx + tw / 2} y2={yd} stroke={pal.ink2} strokeWidth={sw} markerStart={`url(#${id('arrow')})`} markerEnd={`url(#${id('arrow')})`} />
+                <text x={cx} y={yd - fs * 0.35} fontSize={fs * 0.8} textAnchor="middle" fill={pal.ink} {...halo}>
+                  {fmt(tw / 1000, 2)} m
+                </text>
+                <line x1={xr} y1={yt} x2={xr} y2={yb} stroke={pal.ink2} strokeWidth={sw} markerStart={`url(#${id('arrow')})`} markerEnd={`url(#${id('arrow')})`} />
+                <text x={xr + fs * 0.4} y={(yt + yb) / 2} fontSize={fs * 0.8} fill={pal.ink} {...halo} dominantBaseline="middle">
+                  {fmt(s.height_m, 2)} m
+                </text>
+              </>
+            );
+          })()}
         </g>
       )}
       {scene.groups[0] && (
@@ -413,55 +588,15 @@ export function TrenchSvg({
           })()}
         </g>
       )}
-      {/* edges and handles (editor only) */}
+      {/* layer boundaries and handles (editor only) */}
       {drag && (
         <g>
           {layers
             .filter((x) => !x.last)
             .map(({ l, bottom }) => (
-              <line key={`lb${l.id}`} x1={R.x0} y1={bottom} x2={R.x1} y2={bottom} stroke="transparent" strokeWidth={sw * 10} className="drag" style={{ cursor: 'ns-resize' }} onPointerDown={(e) => drag.start(e, 'layer-bottom', l.id)} />
+              <line key={`lb${l.id}`} x1={R.x0} y1={bottom} x2={R.x1} y2={bottom} stroke="transparent" strokeWidth={sw * 10} className="drag" style={{ cursor: 'ns-resize' }} {...on('layer-bottom', l.id)} />
             ))}
-          {t.present &&
-            t.zones.map((z) => (
-              <g key={`ze${z.id}`}>
-                {(['top', 'bottom'] as const).map((edge) => {
-                  const y = (edge === 'top' ? z.top_m : z.bottom_m) * 1000;
-                  if (edge === 'top' && y <= 0) return null;
-                  return (
-                    <line
-                      key={edge}
-                      x1={cx - hw(y)}
-                      y1={y}
-                      x2={cx + hw(y)}
-                      y2={y}
-                      stroke={isSel('zone', z.id) ? pal.accent : 'transparent'}
-                      strokeWidth={isSel('zone', z.id) ? sw * 2 : sw * 10}
-                      className="drag" style={{ cursor: 'ns-resize' }}
-                      onPointerDown={(e) => drag.start(e, `zone-${edge}`, z.id)}
-                    />
-                  );
-                })}
-              </g>
-            ))}
-          {t.present &&
-            [
-              { kind: 'trench-top', x: cx + hw(0), y: 0, cur: 'ew-resize' },
-              { kind: 'trench-corner', x: cx + hw(D), y: D, cur: 'nwse-resize' },
-              { kind: 'trench-move', x: cx, y: D, cur: 'move' },
-            ].map((hdl) => (
-              <rect
-                key={hdl.kind}
-                x={hdl.x - sw * 6}
-                y={hdl.y - sw * 6}
-                width={sw * 12}
-                height={sw * 12}
-                fill={pal.panel}
-                stroke={pal.accent}
-                strokeWidth={sw * 1.4}
-                className="drag" style={{ cursor: hdl.cur }}
-                onPointerDown={(e) => drag.start(e, hdl.kind)}
-              />
-            ))}
+          {handles}
         </g>
       )}
     </svg>
@@ -477,160 +612,257 @@ interface EditorProps {
   num: NumericState;
   pal: Palette;
   onChange: (i: InstallationSpec) => void;
+  undo?: () => void;
+  redo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
-/** Drag-and-drop trench editor with an inspector for exact values. */
-export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorProps) {
+interface DragState {
+  kind: string;
+  a?: string | number;
+  b?: string | number;
+  x0: number;
+  y0: number;
+  cx: number;
+  cy: number;
+  moved: boolean;
+  inst: InstallationSpec;
+  view: View;
+}
+
+/** Drag-and-drop cross-section editor with an inspector and an object list. */
+export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo, canUndo, canRedo }: EditorProps) {
   const idPrefix = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const [sel, setSel] = useState<Selection>(null);
   const [showHeat, setShowHeat] = useState(true);
+  const [showLabels, setShowLabels] = useState(true);
   const [template, setTemplate] = useState(TRENCH_TEMPLATES[0].id);
-  const svgWrap = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ kind: string; payload?: string | number; x0: number; y0: number; inst: InstallationSpec } | null>(null);
+  const [snap, setSnap] = useState('0.01');
+  const [view, setView] = useState<View>({ zoom: 1, panX: 0, panY: 0 });
+  const wrap = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragState | null>(null);
   const t = inst.trench;
 
-  const scene = useMemo(() => trenchScene(cable, inst, iec, num, pal), [cable, inst, iec, num, pal]);
+  const scene = useMemo(() => trenchScene(cable, inst, iec, num, pal, view), [cable, inst, iec, num, pal, view]);
   const heat = useMemo(() => (scene && showHeat ? trenchHeat(scene, pal) : null), [scene, pal, showHeat]);
 
   if (!t) return null;
+  const step = Number(snap);
+  const sn = (v: number) => (step > 0 ? Math.round(v / step) * step : r3(v));
 
-  const setT = (patch: Partial<TrenchSpec>) => onChange({ ...inst, trench: { ...t, ...patch } });
-  const setLayer = (id: string, patch: Partial<SoilLayer>) => setT({ layers: t.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
-  const setZone = (id: string, patch: Partial<TrenchZone>) => setT({ zones: t.zones.map((z) => (z.id === id ? { ...z, ...patch } : z)) });
-  const setSlab = (id: string, patch: Partial<TrenchSlab>) => setT({ slabs: t.slabs.map((s) => (s.id === id ? { ...s, ...patch } : s)) });
-  const circuitPatch = (base: InstallationSpec, index: number, patch: { x?: number; depth?: number }): InstallationSpec => {
-    if (index === 0) return { ...base, mainX_m: patch.x ?? base.mainX_m, depth_m: patch.depth ?? base.depth_m };
-    return {
-      ...base,
-      circuits: base.circuits.map((c, i) =>
-        i === index - 1 ? { ...c, x_m: patch.x ?? c.x_m, depth_m: patch.depth ?? c.depth_m } : c,
-      ),
-    };
+  // --- updates
+  const setT = (patch: Partial<TrenchSpec>, base: InstallationSpec = inst) => onChange({ ...base, trench: { ...base.trench!, ...patch } });
+  const setShape = (sid: string, patch: Partial<GroundShape>, base: InstallationSpec = inst) =>
+    setT({ shapes: base.trench!.shapes.map((s) => (s.id === sid ? { ...s, ...patch } : s)) }, base);
+  const setLayer = (lid: string, patch: Partial<SoilLayer>) => setT({ layers: t.layers.map((l) => (l.id === lid ? { ...l, ...patch } : l)) });
+  const setSlab = (sid: string, patch: Partial<TrenchSlab>) => setT({ slabs: t.slabs.map((s) => (s.id === sid ? { ...s, ...patch } : s)) });
+  const setSource = (hid: string, patch: Partial<HeatSource>, base: InstallationSpec = inst) =>
+    onChange({ ...base, heatSources: (base.heatSources ?? []).map((h) => (h.id === hid ? { ...h, ...patch } : h)) });
+  const setCircuit = (index: number, patch: Partial<CircuitSpec>, base: InstallationSpec = inst) => {
+    if (index === 0) {
+      const m: Partial<InstallationSpec> = {};
+      if (patch.x_m !== undefined) m.mainX_m = patch.x_m;
+      if (patch.depth_m !== undefined) m.depth_m = patch.depth_m;
+      if (patch.formation) m.formation = patch.formation;
+      if (patch.touching !== undefined) m.touching = patch.touching;
+      if (patch.spacing_mm !== undefined) m.spacing_mm = patch.spacing_mm;
+      if (patch.rotated !== undefined) m.rotated = patch.rotated;
+      onChange({ ...base, ...m });
+    } else onChange({ ...base, circuits: base.circuits.map((c, i) => (i === index - 1 ? { ...c, ...patch } : c)) });
   };
 
+  // --- pointer handling
   const toMm = (e: { clientX: number; clientY: number }) => {
-    const svg = svgWrap.current?.querySelector('svg');
+    const svg = wrap.current?.querySelector('svg');
     const m = svg?.getScreenCTM();
     if (!svg || !m) return { x: 0, y: 0 };
     const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
     return { x: p.x, y: p.y };
   };
 
-  const start = (e: React.PointerEvent, kind: string, payload?: string | number) => {
+  const start = (e: React.PointerEvent, kind: string, a?: string | number, b?: string | number) => {
     e.stopPropagation();
     e.preventDefault();
+    wrap.current?.focus({ preventScroll: true });
     const p = toMm(e);
-    dragRef.current = { kind, payload, x0: p.x, y0: p.y, inst };
-    svgWrap.current?.setPointerCapture?.(e.pointerId);
-    if (kind === 'circuit') setSel({ kind: 'circuit', index: payload as number });
-    else if (kind === 'slab') setSel({ kind: 'slab', id: payload as string });
-    else if (kind.startsWith('zone')) setSel({ kind: 'zone', id: payload as string });
-    else if (kind === 'layer-bottom') setSel({ kind: 'layer', id: payload as string });
-    else setSel({ kind: 'trench' });
+    let base = inst;
+    // inserting a polygon corner at an edge midpoint, then dragging it
+    if (kind === 'vertex-add') {
+      const s = t.shapes.find((x) => x.id === a)!;
+      const pts = [...(s.points ?? [])];
+      const i = b as number;
+      const nx = pts[(i + 1) % pts.length];
+      pts.splice(i + 1, 0, [r3((pts[i][0] + nx[0]) / 2), r3((pts[i][1] + nx[1]) / 2)]);
+      base = { ...inst, trench: { ...t, shapes: t.shapes.map((x) => (x.id === s.id ? { ...x, points: pts } : x)) } };
+      onChange(base);
+      kind = 'vertex';
+      b = i + 1;
+    }
+    dragRef.current = { kind, a, b, x0: p.x, y0: p.y, cx: e.clientX, cy: e.clientY, moved: false, inst: base, view };
+    wrap.current?.setPointerCapture?.(e.pointerId);
+    if (kind === 'circuit') setSel({ kind: 'circuit', index: a as number });
+    else if (kind === 'slab') setSel({ kind: 'slab', id: a as string });
+    else if (kind === 'source') setSel({ kind: 'source', id: a as string });
+    else if (kind === 'shape') setSel({ kind: 'shape', id: a as string, band: b as string | undefined });
+    else if (kind.startsWith('band-')) setSel({ kind: 'shape', id: a as string, band: b as string });
+    else if (kind === 'vertex') setSel({ kind: 'shape', id: a as string, vertex: b as number });
+    else if (kind === 'layer-bottom') setSel({ kind: 'layer', id: a as string });
+    else if (['rect-corner', 'trench-top', 'trench-corner', 'circle-r'].includes(kind)) setSel({ kind: 'shape', id: a as string });
   };
 
   const move = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
+    if (!d.moved && Math.hypot(e.clientX - d.cx, e.clientY - d.cy) < 3) return;
+    d.moved = true;
+    if (d.kind === 'pan') {
+      // move the view, in screen terms
+      const svg = wrap.current?.querySelector('svg');
+      const m = svg?.getScreenCTM();
+      if (!m) return;
+      const dx = (e.clientX - d.cx) / m.a;
+      const dy = (e.clientY - d.cy) / m.d;
+      setView({ ...d.view, panX: d.view.panX - dx, panY: d.view.panY - dy });
+      return;
+    }
     const p = toMm(e);
     const dx = (p.x - d.x0) / 1000;
     const dy = (p.y - d.y0) / 1000;
     const b = d.inst;
     const bt = b.trench!;
-    const snap = (v: number) => r2(v);
-    let next: InstallationSpec = b;
     switch (d.kind) {
       case 'circuit': {
-        const i = d.payload as number;
+        const i = d.a as number;
         const x0 = i === 0 ? (b.mainX_m ?? 0) : b.circuits[i - 1].x_m;
         const y0 = i === 0 ? b.depth_m : b.circuits[i - 1].depth_m;
-        next = circuitPatch(b, i, { x: snap(x0 + dx), depth: Math.max(0.1, snap(y0 + dy)) });
+        setCircuit(i, { x_m: sn(x0 + dx), depth_m: Math.max(0.1, sn(y0 + dy)) }, b);
+        break;
+      }
+      case 'source': {
+        const h = (b.heatSources ?? []).find((x) => x.id === d.a)!;
+        setSource(h.id, { x_m: sn(h.x_m + dx), depth_m: Math.max(0.05, sn(h.depth_m + dy)) }, b);
         break;
       }
       case 'slab': {
-        const s = bt.slabs.find((x) => x.id === d.payload)!;
-        next = {
-          ...b,
-          trench: {
-            ...bt,
-            slabs: bt.slabs.map((x) => (x.id === s.id ? { ...x, x_m: snap(s.x_m + dx), depth_m: Math.max(0, snap(s.depth_m + dy)) } : x)),
-          },
-        };
+        const s = bt.slabs.find((x) => x.id === d.a)!;
+        setT({ slabs: bt.slabs.map((x) => (x.id === s.id ? { ...x, x_m: sn(s.x_m + dx), depth_m: Math.max(0, sn(s.depth_m + dy)) } : x)) }, b);
         break;
       }
-      case 'zone-top':
-      case 'zone-bottom': {
-        const z = bt.zones.find((x) => x.id === d.payload)!;
-        const zones = bt.zones.map((x) => {
-          if (x.id !== z.id) return x;
-          if (d.kind === 'zone-top') return { ...x, top_m: Math.min(x.bottom_m - 0.02, Math.max(0, snap(z.top_m + dy))) };
-          return { ...x, bottom_m: Math.max(x.top_m + 0.02, Math.min(bt.depth_m, snap(z.bottom_m + dy))) };
-        });
-        next = { ...b, trench: { ...bt, zones } };
+      case 'shape': {
+        const s = bt.shapes.find((x) => x.id === d.a)!;
+        const ddx = sn(dx);
+        const ddy = s.kind === 'trench' && s.y_m === 0 ? 0 : sn(dy);
+        if (s.kind === 'polygon') setShape(s.id, { points: (s.points ?? []).map(([x, y]) => [r3(x + ddx), r3(y + ddy)]) }, b);
+        else
+          setShape(
+            s.id,
+            {
+              x_m: r3(s.x_m + ddx),
+              y_m: r3(Math.max(s.kind === 'circle' ? s.width_m / 2 : 0, s.y_m + ddy)),
+              bands: s.bands?.map((bd) => ({ ...bd, top_m: r3(bd.top_m + ddy), bottom_m: r3(bd.bottom_m + ddy) })),
+            },
+            b,
+          );
+        break;
+      }
+      case 'rect-corner': {
+        const s = bt.shapes.find((x) => x.id === d.a)!;
+        const c = d.b as number;
+        let l = s.x_m - s.width_m / 2;
+        let r = s.x_m + s.width_m / 2;
+        let tp = s.y_m;
+        let bo = s.y_m + s.height_m;
+        if (c === 0 || c === 3) l = sn(l + dx);
+        else r = sn(r + dx);
+        if (c === 0 || c === 1) tp = Math.max(0, sn(tp + dy));
+        else bo = sn(bo + dy);
+        if (r - l < 0.02 || bo - tp < 0.02) return;
+        setShape(s.id, { x_m: r3((l + r) / 2), width_m: r3(r - l), y_m: r3(tp), height_m: r3(bo - tp) }, b);
+        break;
+      }
+      case 'trench-top': {
+        const s = bt.shapes.find((x) => x.id === d.a)!;
+        setShape(s.id, { topWidth_m: Math.max(0.1, sn((s.topWidth_m ?? s.width_m) + 2 * dx)) }, b);
+        break;
+      }
+      case 'trench-corner': {
+        const s = bt.shapes.find((x) => x.id === d.a)!;
+        const height = Math.max(0.2, sn(s.height_m + dy));
+        const bottom = s.y_m + height;
+        setShape(
+          s.id,
+          {
+            width_m: Math.max(0.1, sn(s.width_m + 2 * dx)),
+            height_m: height,
+            bands: s.bands?.map((bd) => ({
+              ...bd,
+              bottom_m: Math.abs(bd.bottom_m - (s.y_m + s.height_m)) < 1e-6 ? bottom : Math.min(bd.bottom_m, bottom),
+              top_m: Math.min(bd.top_m, bottom - 0.02),
+            })),
+          },
+          b,
+        );
+        break;
+      }
+      case 'circle-r': {
+        const s = bt.shapes.find((x) => x.id === d.a)!;
+        setShape(s.id, { width_m: Math.max(0.05, sn(s.width_m + 2 * dx)), height_m: Math.max(0.05, sn(s.width_m + 2 * dx)) }, b);
+        break;
+      }
+      case 'vertex': {
+        const s = bt.shapes.find((x) => x.id === d.a)!;
+        const i = d.b as number;
+        const pts = (s.points ?? []).map((q, k) => (k === i ? ([sn(q[0] + dx), Math.max(0, sn(q[1] + dy))] as [number, number]) : q));
+        setShape(s.id, { points: pts }, b);
+        break;
+      }
+      case 'band-top':
+      case 'band-bottom': {
+        const s = bt.shapes.find((x) => x.id === d.a)!;
+        setShape(
+          s.id,
+          {
+            bands: s.bands?.map((bd) => {
+              if (bd.id !== d.b) return bd;
+              if (d.kind === 'band-top') return { ...bd, top_m: Math.min(bd.bottom_m - 0.02, Math.max(s.y_m, sn(bd.top_m + dy))) };
+              return { ...bd, bottom_m: Math.max(bd.top_m + 0.02, Math.min(s.y_m + s.height_m, sn(bd.bottom_m + dy))) };
+            }),
+          },
+          b,
+        );
         break;
       }
       case 'layer-bottom': {
-        const l = bt.layers.find((x) => x.id === d.payload)!;
-        next = { ...b, trench: { ...bt, layers: bt.layers.map((x) => (x.id === l.id ? { ...x, thickness_m: Math.max(0.05, snap(l.thickness_m + dy)) } : x)) } };
+        const l = bt.layers.find((x) => x.id === d.a)!;
+        setT({ layers: bt.layers.map((x) => (x.id === l.id ? { ...x, thickness_m: Math.max(0.05, sn(l.thickness_m + dy)) } : x)) }, b);
         break;
       }
-      case 'trench-top':
-        next = { ...b, trench: { ...bt, topWidth_m: Math.max(0.2, snap(bt.topWidth_m + 2 * dx)) } };
-        break;
-      case 'trench-corner': {
-        const depth = Math.max(0.3, snap(bt.depth_m + dy));
-        next = {
-          ...b,
-          trench: {
-            ...bt,
-            bottomWidth_m: Math.max(0.2, snap(bt.bottomWidth_m + 2 * dx)),
-            depth_m: depth,
-            zones: bt.zones.map((z) => ({ ...z, bottom_m: Math.min(z.bottom_m === bt.depth_m ? depth : z.bottom_m, depth), top_m: Math.min(z.top_m, depth - 0.02) })),
-          },
-        };
-        break;
-      }
-      case 'trench-move':
-        next = { ...b, trench: { ...bt, centreX_m: snap(bt.centreX_m + dx) } };
-        break;
     }
-    onChange(next);
   };
 
   const end = () => {
+    const d = dragRef.current;
     dragRef.current = null;
+    if (d && d.kind === 'pan' && !d.moved) setSel(typeof d.a === 'string' ? { kind: 'layer', id: d.a } : null);
   };
 
-  const onKey = (e: React.KeyboardEvent) => {
-    if (!sel) return;
-    const step = e.shiftKey ? 0.1 : 0.01;
-    const dirs: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
-    if (dirs[e.key]) {
-      const [dx, dy] = dirs[e.key];
-      if (sel.kind === 'circuit') {
-        const x0 = sel.index === 0 ? (inst.mainX_m ?? 0) : inst.circuits[sel.index - 1].x_m;
-        const y0 = sel.index === 0 ? inst.depth_m : inst.circuits[sel.index - 1].depth_m;
-        onChange(circuitPatch(inst, sel.index, { x: r2(x0 + dx), depth: Math.max(0.1, r2(y0 + dy)) }));
-        e.preventDefault();
-      } else if (sel.kind === 'slab') {
-        const s = t.slabs.find((x) => x.id === sel.id);
-        if (s) setSlab(s.id, { x_m: r2(s.x_m + dx), depth_m: Math.max(0, r2(s.depth_m + dy)) });
-        e.preventDefault();
-      }
-    }
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      if (sel.kind === 'slab') setT({ slabs: t.slabs.filter((s) => s.id !== sel.id) });
-      else if (sel.kind === 'zone') setT({ zones: t.zones.filter((z) => z.id !== sel.id) });
-      else if (sel.kind === 'circuit' && sel.index > 0) onChange({ ...inst, circuits: inst.circuits.filter((_, i) => i !== sel.index - 1) });
-      else return;
-      setSel(null);
-      e.preventDefault();
-    }
+  // --- add, duplicate, delete
+  const native = t.layers[Math.min(1, t.layers.length - 1)];
+  const contentRight = () => {
+    let x = (inst.mainX_m ?? 0) + 0.3;
+    inst.circuits.forEach((c) => (x = Math.max(x, c.x_m + 0.3)));
+    t.shapes.forEach((s) => (x = Math.max(x, shapeBounds(s).x1)));
+    (inst.heatSources ?? []).forEach((h) => (x = Math.max(x, h.x_m + h.diameter_mm / 2000)));
+    return x;
   };
-
-  // --- add actions
+  const mx = inst.mainX_m ?? 0;
+  const md = inst.depth_m;
+  const addShape = (s: GroundShape) => {
+    setT({ shapes: [...t.shapes, s] });
+    setSel({ kind: 'shape', id: s.id });
+  };
   const addCircuit = () => {
-    const xs = [inst.mainX_m ?? 0, ...inst.circuits.map((c) => c.x_m)];
     const D = (t.ducted ? inst.duct.outerD_mm : deriveGeometry(cable).geometry.De || 50) / 1000;
     const s = inst.touching ? D : inst.spacing_mm / 1000;
     const width = (inst.formation === 'flat' ? 2 * s : s) + D;
@@ -638,8 +870,8 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
       id: uid(),
       name: `C${inst.circuits.length + 2}`,
       cable: null,
-      x_m: r2(Math.max(...xs) + width + 0.15),
-      depth_m: inst.depth_m,
+      x_m: r3(contentRight() + width / 2 + 0.2),
+      depth_m: md,
       formation: inst.formation,
       touching: inst.touching,
       spacing_mm: inst.spacing_mm,
@@ -652,26 +884,23 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
     onChange({ ...inst, circuits: [...inst.circuits, c] });
     setSel({ kind: 'circuit', index: inst.circuits.length + 1 });
   };
+  const addSource = () => {
+    const h: HeatSource = { id: uid(), name: 'Heat source', x_m: r3(contentRight() + 0.4), depth_m: md, diameter_mm: 200, W: 30 };
+    onChange({ ...inst, heatSources: [...(inst.heatSources ?? []), h] });
+    setSel({ kind: 'source', id: h.id });
+  };
   const addSlab = (kind: 'tile' | 'tape') => {
     const s: TrenchSlab = {
       id: uid(),
       kind,
-      x_m: t.centreX_m,
-      depth_m: kind === 'tile' ? r2(Math.max(0.2, inst.depth_m - 0.25)) : r2(Math.max(0.2, inst.depth_m - 0.55)),
-      width_m: r2(Math.min(t.bottomWidth_m, t.topWidth_m) * 0.85),
+      x_m: mx,
+      depth_m: kind === 'tile' ? r3(Math.max(0.2, md - 0.25)) : r3(Math.max(0.2, md - 0.55)),
+      width_m: 0.5,
       thickness_m: kind === 'tile' ? 0.03 : 0.005,
       rho: kind === 'tile' ? GROUND.polymer.rho : 1,
     };
     setT({ slabs: [...t.slabs, s] });
     setSel({ kind: 'slab', id: s.id });
-  };
-  const addZone = () => {
-    const tops = t.zones.map((z) => z.top_m);
-    const bottom = tops.length ? Math.min(...tops) : t.depth_m;
-    const z: TrenchZone = { id: uid(), name: 'Sand', material: 'sand', rho: GROUND.sand.rho, top_m: r2(Math.max(0, bottom - 0.3)), bottom_m: r2(bottom) };
-    if (z.bottom_m - z.top_m < 0.02) return;
-    setT({ zones: [...t.zones, z] });
-    setSel({ kind: 'zone', id: z.id });
   };
   const addLayer = () => {
     const l: SoilLayer = { id: uid(), name: 'Clay', material: 'clay', thickness_m: 0.5, rho: GROUND.clay.rho };
@@ -681,97 +910,269 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
     setSel({ kind: 'layer', id: l.id });
   };
 
+  const duplicate = () => {
+    if (!sel) return;
+    if (sel.kind === 'shape') {
+      const s = t.shapes.find((x) => x.id === sel.id);
+      if (!s) return;
+      const c: GroundShape = { ...clone(s), id: uid(), name: `${s.name} copy`, bands: s.bands?.map((b) => ({ ...b, id: uid() })) };
+      const off = Math.max(0.3, shapeBounds(s).x1 - shapeBounds(s).x0 + 0.2);
+      if (c.kind === 'polygon') c.points = c.points?.map(([x, y]) => [r3(x + off), y]);
+      else c.x_m = r3(c.x_m + off);
+      addShape(c);
+    } else if (sel.kind === 'slab') {
+      const s = t.slabs.find((x) => x.id === sel.id);
+      if (!s) return;
+      const c = { ...s, id: uid(), depth_m: r3(s.depth_m + 0.1) };
+      setT({ slabs: [...t.slabs, c] });
+      setSel({ kind: 'slab', id: c.id });
+    } else if (sel.kind === 'source') {
+      const h = (inst.heatSources ?? []).find((x) => x.id === sel.id);
+      if (!h) return;
+      const c = { ...h, id: uid(), name: `${h.name} copy`, x_m: r3(h.x_m + h.diameter_mm / 1000 + 0.15) };
+      onChange({ ...inst, heatSources: [...(inst.heatSources ?? []), c] });
+      setSel({ kind: 'source', id: c.id });
+    } else if (sel.kind === 'circuit') {
+      const src: CircuitSpec =
+        sel.index === 0
+          ? {
+              id: uid(),
+              name: '',
+              cable: null,
+              x_m: mx,
+              depth_m: md,
+              formation: inst.formation,
+              touching: inst.touching,
+              spacing_mm: inst.spacing_mm,
+              transposed: inst.transposed,
+              bonding: inst.bonding,
+              crossBondLambda1: inst.crossBondLambda1,
+              load: 'rated',
+              current_A: 300,
+              rotated: inst.rotated,
+              ducted: t.ducted,
+            }
+          : inst.circuits[sel.index - 1];
+      const c = { ...clone(src), id: uid(), name: `C${inst.circuits.length + 2}`, x_m: r3(contentRight() + 0.35) };
+      onChange({ ...inst, circuits: [...inst.circuits, c] });
+      setSel({ kind: 'circuit', index: inst.circuits.length + 1 });
+    }
+  };
+
+  const remove = () => {
+    if (!sel) return;
+    if (sel.kind === 'shape') {
+      const s = t.shapes.find((x) => x.id === sel.id);
+      if (s && sel.vertex !== undefined && s.kind === 'polygon' && (s.points?.length ?? 0) > 3) {
+        setShape(s.id, { points: s.points!.filter((_, i) => i !== sel.vertex) });
+        setSel({ kind: 'shape', id: s.id });
+        return;
+      }
+      if (s && sel.band) {
+        setShape(s.id, { bands: s.bands?.filter((b) => b.id !== sel.band) });
+        setSel({ kind: 'shape', id: s.id });
+        return;
+      }
+      setT({ shapes: t.shapes.filter((x) => x.id !== sel.id) });
+    } else if (sel.kind === 'slab') setT({ slabs: t.slabs.filter((x) => x.id !== sel.id) });
+    else if (sel.kind === 'source') onChange({ ...inst, heatSources: (inst.heatSources ?? []).filter((x) => x.id !== sel.id) });
+    else if (sel.kind === 'circuit' && sel.index > 0) onChange({ ...inst, circuits: inst.circuits.filter((_, i) => i !== sel.index - 1) });
+    else if (sel.kind === 'layer' && t.layers.length > 1) setT({ layers: t.layers.filter((x) => x.id !== sel.id) });
+    else return;
+    setSel(null);
+  };
+
+  const reorder = (sid: string, d: number) => {
+    const i = t.shapes.findIndex((s) => s.id === sid);
+    const j = i + d;
+    if (i < 0 || j < 0 || j >= t.shapes.length) return;
+    const shapes = [...t.shapes];
+    [shapes[i], shapes[j]] = [shapes[j], shapes[i]];
+    setT({ shapes });
+  };
+
+  const onKey = (e: React.KeyboardEvent) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) redo?.();
+      else undo?.();
+      return;
+    }
+    if (mod && e.key.toLowerCase() === 'y') {
+      e.preventDefault();
+      redo?.();
+      return;
+    }
+    if (mod && e.key.toLowerCase() === 'd') {
+      e.preventDefault();
+      duplicate();
+      return;
+    }
+    if (!sel) return;
+    const st = e.shiftKey ? 0.1 : step > 0 ? step : 0.01;
+    const dirs: Record<string, [number, number]> = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, -st], ArrowDown: [0, st] };
+    if (dirs[e.key]) {
+      const [dx, dy] = dirs[e.key];
+      e.preventDefault();
+      if (sel.kind === 'circuit') {
+        const x0 = sel.index === 0 ? mx : inst.circuits[sel.index - 1].x_m;
+        const y0 = sel.index === 0 ? md : inst.circuits[sel.index - 1].depth_m;
+        setCircuit(sel.index, { x_m: r3(x0 + dx), depth_m: Math.max(0.1, r3(y0 + dy)) });
+      } else if (sel.kind === 'slab') {
+        const s = t.slabs.find((x) => x.id === sel.id);
+        if (s) setSlab(s.id, { x_m: r3(s.x_m + dx), depth_m: Math.max(0, r3(s.depth_m + dy)) });
+      } else if (sel.kind === 'source') {
+        const h = (inst.heatSources ?? []).find((x) => x.id === sel.id);
+        if (h) setSource(h.id, { x_m: r3(h.x_m + dx), depth_m: Math.max(0.05, r3(h.depth_m + dy)) });
+      } else if (sel.kind === 'shape') {
+        const s = t.shapes.find((x) => x.id === sel.id);
+        if (!s) return;
+        const ddy = s.kind === 'trench' && s.y_m === 0 ? 0 : dy;
+        if (s.kind === 'polygon') setShape(s.id, { points: (s.points ?? []).map(([x, y]) => [r3(x + dx), r3(y + ddy)]) });
+        else setShape(s.id, { x_m: r3(s.x_m + dx), y_m: r3(s.y_m + ddy), bands: s.bands?.map((b) => ({ ...b, top_m: r3(b.top_m + ddy), bottom_m: r3(b.bottom_m + ddy) })) });
+      }
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      remove();
+    }
+  };
+
   // --- inspector
+  const n0 = (v: number | null) => (v === null ? 0 : v);
+  let title = 'Nothing selected';
   let inspector: React.ReactNode = (
     <p className="empty-note">
-      Select an item to edit it. Drag circuits, tiles and tape; drag zone and layer edges; use the square handles to
-      resize or move the trench. Arrow keys move the selected item by 10 mm (Shift: 100 mm).
+      Select an item here or in the drawing. Drag items to move them, drag the square handles to resize, and drag
+      empty ground to pan. Arrow keys move the selected item; Ctrl+Z undoes, Ctrl+D duplicates, Delete removes.
     </p>
   );
-  const num0 = (v: number | null) => (v === null ? 0 : v);
-  if (sel?.kind === 'trench') {
-    inspector = (
-      <div className="field-grid">
-        <Toggle id="tr-present" label="Open-cut trench" checked={t.present} onChange={(present) => setT({ present })} hint="Off for drilled or bored crossings: cables lie in the layered ground." />
-        <Toggle id="tr-ducted" label="Cables in ducts" checked={t.ducted} onChange={(ducted) => setT({ ducted })} hint="Duct sizes are set in the Installation tab." />
-        <NumField id="tr-top" label="Width at surface" unit="m" value={t.topWidth_m} onChange={(v) => setT({ topWidth_m: num0(v) })} />
-        <NumField id="tr-bottom" label="Width at bottom" unit="m" value={t.bottomWidth_m} onChange={(v) => setT({ bottomWidth_m: num0(v) })} />
-        <NumField id="tr-depth" label="Depth" unit="m" value={t.depth_m} onChange={(v) => setT({ depth_m: num0(v) })} />
-        <NumField id="tr-x" label="Centre position" unit="m" value={t.centreX_m} onChange={(v) => setT({ centreX_m: num0(v) })} />
-        <SelectField
-          id="tr-surface"
-          label="Surface"
-          value={t.surface}
-          options={[
-            { value: 'grass', label: 'Grass' },
-            { value: 'asphalt', label: 'Asphalt road' },
-            { value: 'paving', label: 'Paving' },
-          ]}
-          onChange={(surface) => setT({ surface })}
-        />
-      </div>
-    );
-  } else if (sel?.kind === 'layer') {
+  if (sel?.kind === 'layer') {
     const l = t.layers.find((x) => x.id === sel.id);
     const idx = t.layers.findIndex((x) => x.id === sel.id);
-    if (l)
+    if (l) {
+      title = 'Ground layer';
       inspector = (
         <div className="field-grid">
-          <TextField id="ly-name" label="Layer name" value={l.name} onChange={(name) => setLayer(l.id, { name })} />
+          <TextField id="ly-name" label="Name" value={l.name} onChange={(name) => setLayer(l.id, { name })} />
           <SelectField id="ly-mat" label="Material" value={l.material} options={materialOptions} onChange={(material) => setLayer(l.id, { material, rho: GROUND[material].rho })} />
-          <NumField id="ly-rho" label="Thermal resistivity" unit="K·m/W" value={l.rho} onChange={(v) => setLayer(l.id, { rho: num0(v) })} hint="Use measured site values where you have them." />
+          <NumField id="ly-rho" label="Thermal resistivity" unit="K·m/W" value={l.rho} onChange={(v) => setLayer(l.id, { rho: n0(v) })} hint="Use measured site values where you have them." />
           {idx < t.layers.length - 1 ? (
-            <NumField id="ly-t" label="Thickness" unit="m" value={l.thickness_m} onChange={(v) => setLayer(l.id, { thickness_m: num0(v) })} />
+            <NumField id="ly-t" label="Thickness" unit="m" value={l.thickness_m} onChange={(v) => setLayer(l.id, { thickness_m: n0(v) })} />
           ) : (
             <p className="field-hint field-wide">The bottom layer continues downwards.</p>
           )}
-          {t.layers.length > 1 && (
-            <div className="btn-row field-wide">
-              <button type="button" className="btn btn-quiet btn-danger" onClick={() => { setT({ layers: t.layers.filter((x) => x.id !== l.id) }); setSel(null); }}>
-                Remove layer
-              </button>
-            </div>
-          )}
         </div>
       );
-  } else if (sel?.kind === 'zone') {
-    const z = t.zones.find((x) => x.id === sel.id);
-    if (z)
+    }
+  } else if (sel?.kind === 'shape') {
+    const s = t.shapes.find((x) => x.id === sel.id);
+    if (s) {
+      title = { trench: 'Trench', rect: 'Rectangle', circle: 'Circle', polygon: 'Polygon' }[s.kind];
+      const idx = t.shapes.findIndex((x) => x.id === s.id);
       inspector = (
         <div className="field-grid">
-          <TextField id="zn-name" label="Fill name" value={z.name} onChange={(name) => setZone(z.id, { name })} />
-          <SelectField id="zn-mat" label="Material" value={z.material} options={materialOptions} onChange={(material) => setZone(z.id, { material, rho: GROUND[material].rho })} />
-          <NumField id="zn-rho" label="Thermal resistivity" unit="K·m/W" value={z.rho} onChange={(v) => setZone(z.id, { rho: num0(v) })} />
-          <NumField id="zn-top" label="Top depth" unit="m" value={z.top_m} onChange={(v) => setZone(z.id, { top_m: num0(v) })} />
-          <NumField id="zn-bot" label="Bottom depth" unit="m" value={z.bottom_m} onChange={(v) => setZone(z.id, { bottom_m: num0(v) })} />
+          <TextField id="sh-name" label="Name" value={s.name} onChange={(name) => setShape(s.id, { name })} />
+          <SelectField id="sh-mat" label={s.kind === 'trench' ? 'Fill material' : 'Material'} value={s.material} options={materialOptions} onChange={(material) => setShape(s.id, { material, rho: GROUND[material].rho })} />
+          <NumField id="sh-rho" label="Thermal resistivity" unit="K·m/W" value={s.rho} onChange={(v) => setShape(s.id, { rho: n0(v) })} />
+          {s.kind !== 'polygon' && <NumField id="sh-x" label="Centre position" unit="m" value={s.x_m} onChange={(v) => setShape(s.id, { x_m: n0(v) })} />}
+          {(s.kind === 'rect' || s.kind === 'trench') && <NumField id="sh-y" label="Top depth" unit="m" value={s.y_m} onChange={(v) => setShape(s.id, { y_m: n0(v) })} />}
+          {s.kind === 'circle' && <NumField id="sh-y" label="Centre depth" unit="m" value={s.y_m} onChange={(v) => setShape(s.id, { y_m: n0(v) })} />}
+          {s.kind === 'rect' && (
+            <>
+              <NumField id="sh-w" label="Width" unit="m" value={s.width_m} onChange={(v) => setShape(s.id, { width_m: n0(v) })} />
+              <NumField id="sh-h" label="Height" unit="m" value={s.height_m} onChange={(v) => setShape(s.id, { height_m: n0(v) })} />
+            </>
+          )}
+          {s.kind === 'circle' && <NumField id="sh-d" label="Diameter" unit="m" value={s.width_m} onChange={(v) => setShape(s.id, { width_m: n0(v), height_m: n0(v) })} />}
+          {s.kind === 'trench' && (
+            <>
+              <NumField id="sh-h" label="Depth" unit="m" value={s.height_m} onChange={(v) => setShape(s.id, { height_m: n0(v) })} />
+              <NumField id="sh-tw" label="Width at top" unit="m" value={s.topWidth_m ?? s.width_m} onChange={(v) => setShape(s.id, { topWidth_m: n0(v) })} />
+              <NumField id="sh-w" label="Width at bottom" unit="m" value={s.width_m} onChange={(v) => setShape(s.id, { width_m: n0(v) })} />
+              <div className="field-wide sub-list">
+                <span className="field-label">Fill bands</span>
+                {(s.bands ?? []).map((b) => (
+                  <div key={b.id} className={`sub-item${sel.band === b.id ? ' is-on' : ''}`}>
+                    <div className="field-grid">
+                      <TextField id={`bd-${b.id}-n`} label="Name" value={b.name} onChange={(name) => setShape(s.id, { bands: s.bands!.map((x) => (x.id === b.id ? { ...x, name } : x)) })} />
+                      <SelectField
+                        id={`bd-${b.id}-m`}
+                        label="Material"
+                        value={b.material}
+                        options={materialOptions}
+                        onChange={(material) => setShape(s.id, { bands: s.bands!.map((x) => (x.id === b.id ? { ...x, material, rho: GROUND[material].rho } : x)) })}
+                      />
+                      <NumField id={`bd-${b.id}-r`} label="ρ" unit="K·m/W" value={b.rho} onChange={(v) => setShape(s.id, { bands: s.bands!.map((x) => (x.id === b.id ? { ...x, rho: n0(v) } : x)) })} />
+                      <NumField id={`bd-${b.id}-t`} label="Top" unit="m" value={b.top_m} onChange={(v) => setShape(s.id, { bands: s.bands!.map((x) => (x.id === b.id ? { ...x, top_m: n0(v) } : x)) })} />
+                      <NumField id={`bd-${b.id}-b`} label="Bottom" unit="m" value={b.bottom_m} onChange={(v) => setShape(s.id, { bands: s.bands!.map((x) => (x.id === b.id ? { ...x, bottom_m: n0(v) } : x)) })} />
+                      <button type="button" className="btn btn-quiet btn-danger" onClick={() => setShape(s.id, { bands: s.bands!.filter((x) => x.id !== b.id) })}>
+                        Remove band
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    const bottom = Math.min(...(s.bands ?? []).map((b) => b.top_m), s.y_m + s.height_m);
+                    const b = makeBand('Sand', 'sand', r3(Math.max(s.y_m, bottom - 0.3)), r3(bottom));
+                    if (b.bottom_m - b.top_m >= 0.02) setShape(s.id, { bands: [...(s.bands ?? []), b] });
+                  }}
+                >
+                  Add fill band
+                </button>
+              </div>
+            </>
+          )}
+          {s.kind === 'polygon' && (
+            <div className="field-wide sub-list">
+              <span className="field-label">Corner points (x, depth in m)</span>
+              {(s.points ?? []).map(([x, y], i) => (
+                <div key={i} className={`point-row${sel.vertex === i ? ' is-on' : ''}`}>
+                  <span className="point-n">{i + 1}</span>
+                  <NumField id={`pt-${i}-x`} label="x" unit="m" value={x} onChange={(v) => setShape(s.id, { points: s.points!.map((q, k) => (k === i ? [n0(v), q[1]] : q)) })} />
+                  <NumField id={`pt-${i}-y`} label="Depth" unit="m" value={y} onChange={(v) => setShape(s.id, { points: s.points!.map((q, k) => (k === i ? [q[0], n0(v)] : q)) })} />
+                  <button
+                    type="button"
+                    className="btn btn-quiet btn-danger"
+                    disabled={(s.points?.length ?? 0) <= 3}
+                    onClick={() => setShape(s.id, { points: s.points!.filter((_, k) => k !== i) })}
+                    aria-label={`Remove point ${i + 1}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <p className="field-hint">Drag the small round handles on the edges to add points.</p>
+            </div>
+          )}
           <div className="btn-row field-wide">
-            <button type="button" className="btn btn-quiet btn-danger" onClick={() => { setT({ zones: t.zones.filter((x) => x.id !== z.id) }); setSel(null); }}>
-              Remove fill zone
+            <button type="button" className="btn btn-quiet" onClick={() => reorder(s.id, 1)} disabled={idx === t.shapes.length - 1}>
+              Bring forward
+            </button>
+            <button type="button" className="btn btn-quiet" onClick={() => reorder(s.id, -1)} disabled={idx === 0}>
+              Send backward
             </button>
           </div>
         </div>
       );
+    }
   } else if (sel?.kind === 'slab') {
     const s = t.slabs.find((x) => x.id === sel.id);
-    if (s)
+    if (s) {
+      title = s.kind === 'tile' ? 'Cover tiles' : 'Warning tape';
       inspector = (
         <div className="field-grid">
-          <Segmented
-            id="sl-kind"
-            label="Type"
-            value={s.kind}
-            options={[
-              { value: 'tile', label: 'Cover tiles' },
-              { value: 'tape', label: 'Warning tape' },
-            ]}
-            onChange={(kind) => setSlab(s.id, { kind })}
-          />
-          <NumField id="sl-x" label="Centre position" unit="m" value={s.x_m} onChange={(v) => setSlab(s.id, { x_m: num0(v) })} />
-          <NumField id="sl-d" label="Depth of top" unit="m" value={s.depth_m} onChange={(v) => setSlab(s.id, { depth_m: num0(v) })} />
-          <NumField id="sl-w" label="Width" unit="m" value={s.width_m} onChange={(v) => setSlab(s.id, { width_m: num0(v) })} />
+          <Segmented id="sl-kind" label="Type" value={s.kind} options={[{ value: 'tile', label: 'Cover tiles' }, { value: 'tape', label: 'Warning tape' }]} onChange={(kind) => setSlab(s.id, { kind })} />
+          <NumField id="sl-x" label="Centre position" unit="m" value={s.x_m} onChange={(v) => setSlab(s.id, { x_m: n0(v) })} />
+          <NumField id="sl-d" label="Depth of top" unit="m" value={s.depth_m} onChange={(v) => setSlab(s.id, { depth_m: n0(v) })} />
+          <NumField id="sl-w" label="Width" unit="m" value={s.width_m} onChange={(v) => setSlab(s.id, { width_m: n0(v) })} />
           {s.kind === 'tile' && (
             <>
-              <NumField id="sl-t" label="Thickness" unit="m" value={s.thickness_m} onChange={(v) => setSlab(s.id, { thickness_m: num0(v) })} />
+              <NumField id="sl-t" label="Thickness" unit="m" value={s.thickness_m} onChange={(v) => setSlab(s.id, { thickness_m: n0(v) })} />
               <SelectField
                 id="sl-mat"
                 label="Tile material"
@@ -785,66 +1186,87 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
             </>
           )}
           {s.kind === 'tape' && <p className="field-hint field-wide">Warning tape is drawn but has no thermal effect.</p>}
-          <div className="btn-row field-wide">
-            <button type="button" className="btn btn-quiet btn-danger" onClick={() => { setT({ slabs: t.slabs.filter((x) => x.id !== s.id) }); setSel(null); }}>
-              Remove
-            </button>
-          </div>
         </div>
       );
+    }
+  } else if (sel?.kind === 'source') {
+    const h = (inst.heatSources ?? []).find((x) => x.id === sel.id);
+    if (h) {
+      title = 'Heat source';
+      inspector = (
+        <div className="field-grid">
+          <TextField id="hs-name" label="Name" value={h.name} onChange={(name) => setSource(h.id, { name })} />
+          <NumField id="hs-w" label="Heat given off" unit="W/m" value={h.W} onChange={(v) => setSource(h.id, { W: n0(v) })} hint="For a pipe: heat loss per metre at its operating temperature." />
+          <NumField id="hs-d" label="Outer diameter" unit="mm" value={h.diameter_mm} onChange={(v) => setSource(h.id, { diameter_mm: n0(v) })} />
+          <NumField id="hs-x" label="Horizontal position" unit="m" value={h.x_m} onChange={(v) => setSource(h.id, { x_m: n0(v) })} />
+          <NumField id="hs-y" label="Depth to centre" unit="m" value={h.depth_m} onChange={(v) => setSource(h.id, { depth_m: n0(v) })} />
+        </div>
+      );
+    }
   } else if (sel?.kind === 'circuit') {
     const i = sel.index;
     const c = i === 0 ? null : inst.circuits[i - 1];
-    if (i === 0 || c)
+    if (i === 0 || c) {
+      title = `Circuit C${i + 1}`;
+      const ducted = i === 0 ? t.ducted : (c!.ducted ?? t.ducted);
+      const duct = i === 0 ? inst.duct : { ...inst.duct, ...(c!.duct ?? {}) };
+      const setDuct = (patch: Partial<typeof duct>) =>
+        i === 0 ? onChange({ ...inst, duct: { ...inst.duct, ...patch } }) : setCircuit(i, { duct: { material: duct.material, innerD_mm: duct.innerD_mm, outerD_mm: duct.outerD_mm, ...patch } });
       inspector = (
         <div className="field-grid">
           <p className="field-hint field-wide">
-            {i === 0 ? 'Main circuit C1. Its cable, bonding and spacing are set in the Cable and Installation tabs.' : `${c!.name}. Cable, bonding and load are set in the Circuits tab.`}
+            {i === 0 ? 'Main circuit. Cable and bonding are set in the Cable and Installation tabs.' : 'Cable, bonding and load are set in the Circuits tab.'}
           </p>
-          <NumField
-            id="ci-x"
-            label="Horizontal position"
-            unit="m"
-            value={i === 0 ? (inst.mainX_m ?? 0) : c!.x_m}
-            onChange={(v) => onChange(circuitPatch(inst, i, { x: num0(v) }))}
+          <NumField id="ci-x" label="Horizontal position" unit="m" value={i === 0 ? mx : c!.x_m} onChange={(v) => setCircuit(i, { x_m: n0(v) })} />
+          <NumField id="ci-d" label="Depth to centre" unit="m" value={i === 0 ? md : c!.depth_m} onChange={(v) => setCircuit(i, { depth_m: n0(v) })} />
+          <Segmented
+            id="ci-form"
+            label="Formation"
+            value={i === 0 ? inst.formation : c!.formation}
+            options={[
+              { value: 'trefoil', label: 'Trefoil' },
+              { value: 'flat', label: 'Flat' },
+            ]}
+            onChange={(formation) => setCircuit(i, { formation })}
           />
-          <NumField
-            id="ci-d"
-            label="Depth to centre"
-            unit="m"
-            value={i === 0 ? inst.depth_m : c!.depth_m}
-            onChange={(v) => onChange(circuitPatch(inst, i, { depth: num0(v) }))}
+          <Toggle
+            id="ci-rot"
+            label={(i === 0 ? inst.formation : c!.formation) === 'flat' ? 'Vertical (stacked)' : 'Point down'}
+            checked={!!(i === 0 ? inst.rotated : c!.rotated)}
+            onChange={(rotated) => setCircuit(i, { rotated })}
           />
-          {i > 0 && (
-            <div className="btn-row field-wide">
-              <button type="button" className="btn btn-quiet btn-danger" onClick={() => { onChange({ ...inst, circuits: inst.circuits.filter((_, k) => k !== i - 1) }); setSel(null); }}>
-                Remove circuit
-              </button>
-            </div>
+          <Toggle id="ci-touch" label={ducted ? 'Ducts touching' : 'Cables touching'} checked={i === 0 ? inst.touching : c!.touching} onChange={(touching) => setCircuit(i, { touching })} />
+          {!(i === 0 ? inst.touching : c!.touching) && (
+            <NumField id="ci-s" label="Axial spacing" unit="mm" value={i === 0 ? inst.spacing_mm : c!.spacing_mm} onChange={(v) => setCircuit(i, { spacing_mm: n0(v) })} />
+          )}
+          <Toggle
+            id="ci-duct"
+            label="In ducts"
+            checked={ducted}
+            onChange={(v) => (i === 0 ? setT({ ducted: v }) : setCircuit(i, { ducted: v }))}
+          />
+          {ducted && (
+            <>
+              <SelectField id="ci-dm" label="Duct material" value={duct.material as 'PE' | 'PVC' | 'earthenware'} options={[...ductOptions]} onChange={(material) => setDuct({ material })} />
+              <NumField id="ci-di" label="Duct inner diameter" unit="mm" value={duct.innerD_mm} onChange={(v) => setDuct({ innerD_mm: n0(v) })} />
+              <NumField id="ci-do" label="Duct outer diameter" unit="mm" value={duct.outerD_mm} onChange={(v) => setDuct({ outerD_mm: n0(v) })} />
+            </>
           )}
         </div>
       );
+    }
   }
 
-  const selTitle =
-    sel?.kind === 'trench'
-      ? 'Trench'
-      : sel?.kind === 'layer'
-        ? 'Ground layer'
-        : sel?.kind === 'zone'
-          ? 'Fill zone'
-          : sel?.kind === 'slab'
-            ? 'Tiles or tape'
-            : sel?.kind === 'circuit'
-              ? `Circuit C${sel.index + 1}`
-              : 'Nothing selected';
+  const canDuplicate = !!sel && sel.kind !== 'layer';
+  const canDelete = !!sel && !(sel.kind === 'circuit' && sel.index === 0) && !(sel.kind === 'layer' && t.layers.length <= 1);
+  const isSel = (k: string, v: string | number) => !!sel && sel.kind === k && (('id' in sel && sel.id === v) || ('index' in sel && sel.index === v));
 
   return (
     <section className="card trench-card" aria-labelledby="trench-title">
       <header className="card-head">
         <div>
-          <h2 id="trench-title">Trench</h2>
-          <p className="card-sub">Drag to arrange. Changes update the IEC rating at once and the numerical model a moment later.</p>
+          <h2 id="trench-title">Cross-section</h2>
+          <p className="card-sub">Build the ground around the cables. The IEC rating updates at once and the numerical model a moment later.</p>
         </div>
         <span className={`pill ${num.status === 'error' ? 'pill-bad' : num.fresh ? 'pill-ok' : 'pill-note'}`} role="status">
           {num.status === 'error'
@@ -854,7 +1276,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
               : 'Updating numerical model…'}
         </span>
       </header>
-      <div className="trench-toolbar" role="toolbar" aria-label="Trench tools">
+      <div className="trench-toolbar" role="toolbar" aria-label="Cross-section tools">
         <div className="tool-group">
           <label htmlFor="tr-template" className="sr-only">
             Template
@@ -870,12 +1292,26 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
             type="button"
             className="btn"
             onClick={() => {
-              const tp = TRENCH_TEMPLATES.find((x) => x.id === template)!;
-              onChange(tp.apply(inst));
+              onChange(TRENCH_TEMPLATES.find((x) => x.id === template)!.apply(inst));
               setSel(null);
+              setView({ zoom: 1, panX: 0, panY: 0 });
             }}
           >
             Use template
+          </button>
+        </div>
+        <div className="tool-group">
+          <button type="button" className="btn btn-quiet" onClick={undo} disabled={!canUndo} aria-label="Undo" title="Undo (Ctrl+Z)">
+            ↶ Undo
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={redo} disabled={!canRedo} aria-label="Redo" title="Redo (Ctrl+Shift+Z)">
+            ↷ Redo
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={duplicate} disabled={!canDuplicate} title="Duplicate (Ctrl+D)">
+            Duplicate
+          </button>
+          <button type="button" className="btn btn-quiet btn-danger" onClick={remove} disabled={!canDelete} title="Delete">
+            Delete
           </button>
         </div>
         <div className="tool-group">
@@ -883,47 +1319,92 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
           <button type="button" className="btn btn-quiet" onClick={addCircuit}>
             Circuit
           </button>
+          <button type="button" className="btn btn-quiet" onClick={addSource}>
+            Heat source
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => addShape(trenchShape({ x: r3(contentRight() + 0.5), depth: 1.0, width: 0.6, fill: native.material, fillRho: native.rho }))}
+          >
+            Trench
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={() => addShape(rectShape('Backfill', 'cbs', mx, r3(Math.max(0.05, md - 0.3)), 0.6, 0.5))}>
+            Rectangle
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={() => addShape(circleShape('Bore', 'bentonite', mx, md, 0.5))}>
+            Circle
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() =>
+              addShape(
+                polygonShape('Fill', 'sand', [
+                  [r3(mx - 0.3), r3(Math.max(0.05, md - 0.35))],
+                  [r3(mx + 0.3), r3(Math.max(0.05, md - 0.35))],
+                  [r3(mx + 0.4), r3(md + 0.3)],
+                  [r3(mx - 0.4), r3(md + 0.3)],
+                ]),
+              )
+            }
+          >
+            Polygon
+          </button>
           <button type="button" className="btn btn-quiet" onClick={() => addSlab('tile')}>
-            Cover tiles
+            Tiles
           </button>
           <button type="button" className="btn btn-quiet" onClick={() => addSlab('tape')}>
-            Warning tape
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={addZone} disabled={!t.present}>
-            Fill zone
+            Tape
           </button>
           <button type="button" className="btn btn-quiet" onClick={addLayer}>
-            Ground layer
+            Layer
           </button>
         </div>
-        <Toggle id="tr-heat" label="Temperatures" checked={showHeat} onChange={setShowHeat} />
+        <div className="tool-group">
+          <label htmlFor="tr-snap" className="tool-label">
+            Snap
+          </label>
+          <select id="tr-snap" value={snap} onChange={(e) => setSnap(e.target.value)}>
+            <option value="0">Off</option>
+            <option value="0.01">10 mm</option>
+            <option value="0.05">50 mm</option>
+            <option value="0.1">100 mm</option>
+          </select>
+          <span className="tool-label">Zoom</span>
+          <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.max(0.25, v.zoom / 1.4) }))} aria-label="Zoom out">
+            −
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.min(12, v.zoom * 1.4) }))} aria-label="Zoom in">
+            +
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>
+            Fit
+          </button>
+          <Toggle id="tr-heat" label="Temperatures" checked={showHeat} onChange={setShowHeat} />
+          <Toggle id="tr-labels" label="Labels" checked={showLabels} onChange={setShowLabels} />
+        </div>
       </div>
       <div className="trench-body">
         <div
           className="trench-canvas"
-          ref={svgWrap}
+          ref={wrap}
           tabIndex={0}
-          aria-label="Trench drawing. Select an item, then use the arrow keys to move it."
+          aria-label="Cross-section drawing. Select an item, then use the arrow keys to move it."
           onKeyDown={onKey}
           onPointerMove={move}
           onPointerUp={end}
           onPointerCancel={end}
-          onPointerDown={(e) => {
-            if (e.target === e.currentTarget) setSel(null);
+          onWheel={(e) => {
+            if (!e.ctrlKey && !e.metaKey) return;
+            e.preventDefault();
+            setView((v) => ({ ...v, zoom: Math.min(12, Math.max(0.25, v.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15))) }));
           }}
         >
           {scene ? (
-            <TrenchSvg
-              inst={inst}
-              scene={scene}
-              heat={heat}
-              pal={pal}
-              idPrefix={idPrefix}
-              showHeat={showHeat}
-              drag={{ start, select: setSel, selection: sel }}
-            />
+            <TrenchSvg inst={inst} scene={scene} heat={heat} pal={pal} idPrefix={idPrefix} showHeat={showHeat} showLabels={showLabels} drag={{ start, selection: sel }} />
           ) : (
-            <div className="drawing-empty">Complete the cable and installation inputs to see the trench.</div>
+            <div className="drawing-empty">Complete the cable and installation inputs to see the cross-section.</div>
           )}
           {scene && showHeat && (
             <HeatLegend
@@ -933,15 +1414,59 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange }: EditorPro
             />
           )}
         </div>
-        <aside className="trench-inspector" aria-label="Selected item">
-          <h3>{selTitle}</h3>
+        <aside className="trench-inspector" aria-label="Selected item and object list">
+          <h3>{title}</h3>
           {inspector}
-          <dl className="trench-facts">
-            <dt>Layer boundaries</dt>
-            <dd>{layerBoundaries(t).map((y) => `${fmt(y, 2)} m`).join(', ') || 'single layer'}</dd>
-            <dt>Fill zones</dt>
-            <dd>{t.present ? t.zones.map((z) => `${z.name} ${fmt(z.top_m, 2)}–${fmt(z.bottom_m, 2)} m`).join('; ') || 'none' : 'no trench'}</dd>
-          </dl>
+          <h3 className="objects-title">Objects</h3>
+          <ul className="object-list">
+            {[{ index: 0, name: 'C1 (main circuit)' }, ...inst.circuits.map((c, k) => ({ index: k + 1, name: c.name || `C${k + 2}` }))].map((c) => (
+              <li key={`c${c.index}`}>
+                <button type="button" className={`obj${isSel('circuit', c.index) ? ' is-on' : ''}`} onClick={() => setSel({ kind: 'circuit', index: c.index })}>
+                  <span className="obj-kind">Circuit</span> {c.name}
+                </button>
+              </li>
+            ))}
+            {(inst.heatSources ?? []).map((h) => (
+              <li key={h.id}>
+                <button type="button" className={`obj${isSel('source', h.id) ? ' is-on' : ''}`} onClick={() => setSel({ kind: 'source', id: h.id })}>
+                  <span className="obj-kind">Heat</span> {h.name} · {fmt(h.W, 0)} W/m
+                </button>
+              </li>
+            ))}
+            {[...t.shapes].reverse().map((s) => (
+              <li key={s.id}>
+                <button type="button" className={`obj${isSel('shape', s.id) ? ' is-on' : ''}`} onClick={() => setSel({ kind: 'shape', id: s.id })}>
+                  <span className="obj-kind">{{ trench: 'Trench', rect: 'Rect', circle: 'Circle', polygon: 'Polygon' }[s.kind]}</span> {s.name} · ρ {fmt(s.rho, 2)}
+                </button>
+              </li>
+            ))}
+            {t.slabs.map((s) => (
+              <li key={s.id}>
+                <button type="button" className={`obj${isSel('slab', s.id) ? ' is-on' : ''}`} onClick={() => setSel({ kind: 'slab', id: s.id })}>
+                  <span className="obj-kind">{s.kind === 'tile' ? 'Tiles' : 'Tape'}</span> {fmt(s.width_m, 2)} m at {fmt(s.depth_m, 2)} m
+                </button>
+              </li>
+            ))}
+            {t.layers.map((l) => (
+              <li key={l.id}>
+                <button type="button" className={`obj${isSel('layer', l.id) ? ' is-on' : ''}`} onClick={() => setSel({ kind: 'layer', id: l.id })}>
+                  <span className="obj-kind">Layer</span> {l.name} · ρ {fmt(l.rho, 2)}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <SelectField
+            id="tr-surface"
+            label="Ground surface"
+            value={t.surface}
+            options={[
+              { value: 'grass', label: 'Grass' },
+              { value: 'asphalt', label: 'Asphalt road' },
+              { value: 'paving', label: 'Paving' },
+            ]}
+            onChange={(surface) => setT({ surface })}
+          />
+          <p className="field-hint">Layer boundaries: {layerBoundaries(t).map((y) => `${fmt(y, 2)} m`).join(', ') || 'single layer'}.</p>
         </aside>
       </div>
     </section>

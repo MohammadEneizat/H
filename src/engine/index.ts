@@ -7,4 +7,4 @@ export * as losses from './losses';
 export * as thermal from './thermal';
 export { fieldTemperature, type FieldModel, type FieldSource } from './field';
 export { solveNumeric, numericField, exactInfluence, type NumericResult, type NumObject, type NumInput } from './numeric';
-export { numericRating, bodiesOf, type NumericRating } from './numericRating';
+export { numericRating, bodiesOf, bodyLosses, numericOptions, sourceBodies, type NumericRating } from './numericRating';

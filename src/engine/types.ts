@@ -103,6 +103,12 @@ export interface CircuitSpec {
   /** 'rated': the circuit is rated together with the main circuit; 'fixed': it carries current_A */
   load: LoadMode;
   current_A: number;
+  /** In ducts (buried installations); undefined follows the main circuit */
+  ducted?: boolean;
+  /** Duct size for this circuit; undefined uses the installation's duct settings */
+  duct?: DuctSize;
+  /** Rotated formation: flat vertical, or trefoil with the point down */
+  rotated?: boolean;
 }
 
 /** A layer of native ground, stacked from the surface down; the last layer continues downwards. */
@@ -114,14 +120,44 @@ export interface SoilLayer {
   rho: number;
 }
 
-/** Fill of the trench between two depths, wall to wall. */
-export interface TrenchZone {
+/** Fill band of a trench between two depths (m below the surface), wall to wall. */
+export interface TrenchBand {
   id: string;
   name: string;
   material: GroundMaterial;
   rho: number;
   top_m: number;
   bottom_m: number;
+}
+/** Older name of a trench fill band. */
+export type TrenchZone = TrenchBand;
+
+export type ShapeKind = 'trench' | 'rect' | 'circle' | 'polygon';
+
+/**
+ * A region of the cross-section with its own material. Later shapes lie on top of
+ * earlier ones. Lengths in m; y is depth below the surface (positive down).
+ */
+export interface GroundShape {
+  id: string;
+  name: string;
+  kind: ShapeKind;
+  material: GroundMaterial;
+  rho: number;
+  /** Centre x (trench, rectangle, circle) */
+  x_m: number;
+  /** Depth of the top (trench, rectangle) or of the centre (circle) */
+  y_m: number;
+  /** Rectangle width, trench width at the bottom, circle diameter */
+  width_m: number;
+  /** Rectangle height, trench depth */
+  height_m: number;
+  /** Trench: width at its top */
+  topWidth_m?: number;
+  /** Trench: fill bands; the rest of the trench is `material` */
+  bands?: TrenchBand[];
+  /** Polygon: corner points [x, y] */
+  points?: [number, number][];
 }
 
 /** Cover tile row or warning tape (tape is drawn but has no thermal effect). */
@@ -136,20 +172,32 @@ export interface TrenchSlab {
   rho: number;
 }
 
-/** Trench cross-section and the ground around it. Lengths in m, x measured from the main circuit axis origin. */
-export interface TrenchSpec {
-  /** false: no trench (for example a drilled crossing); cables lie in the layered ground */
-  present: boolean;
-  centreX_m: number;
+/** A buried heat source other than the cables, such as a district heating pipe. */
+export interface HeatSource {
+  id: string;
+  name: string;
+  x_m: number;
   depth_m: number;
-  bottomWidth_m: number;
-  topWidth_m: number;
+  diameter_mm: number;
+  /** Heat given off (W/m) */
+  W: number;
+}
+
+/** The cross-section: ground layers, shapes, tiles and tape. */
+export interface TrenchSpec {
   surface: 'grass' | 'asphalt' | 'paving';
   layers: SoilLayer[];
-  zones: TrenchZone[];
+  shapes: GroundShape[];
   slabs: TrenchSlab[];
-  /** Cables in ducts (one per cable, using the duct settings) */
+  /** Main circuit in ducts (one per cable, using the duct settings) */
   ducted: boolean;
+}
+
+/** Duct size for one circuit. */
+export interface DuctSize {
+  material: DuctKey;
+  innerD_mm: number;
+  outerD_mm: number;
 }
 
 /** Rectangular zone of different thermal resistivity around the cables (IEC 60287-2-1 backfill / duct bank method). */
@@ -217,6 +265,12 @@ export interface InstallationSpec {
   trench?: TrenchSpec;
   /** Backfill rectangle for direct burial or ducts (set from a trench for the IEC method) */
   backfill?: BackfillSpec | null;
+  /** Main circuit rotated: flat vertical, or trefoil with the point down */
+  rotated?: boolean;
+  /** Other buried heat sources; used with the cross-section layout (installation type 'trench') */
+  heatSources?: HeatSource[];
+  /** Set by the cross-section conversion so that heat sources are kept; not set by users */
+  fromLayout?: boolean;
   air: {
     arrangement: AirArrangement;
     solar: boolean;
@@ -332,6 +386,7 @@ export interface CircuitResult {
   /** Cable and duct outer diameters (mm) */
   De: number;
   ductD?: number;
+  ductInnerD?: number;
   dc: number;
   hottest: number;
 }
@@ -383,18 +438,4 @@ export interface TemperatureResult {
   lambda1: number;
   W: number;
   iterations: number;
-}
-
-/** A stretch of the cable route with its own installation. */
-export interface RouteSection {
-  id: string;
-  name: string;
-  length_m: number;
-  inst: InstallationSpec;
-}
-
-/** The cable route: sections in order from the start; `activeId` is the section being edited. */
-export interface RouteSpec {
-  sections: RouteSection[];
-  activeId: string | null;
 }

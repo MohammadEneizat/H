@@ -226,12 +226,10 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
   const t = inst.type === 'trench' ? inst.trench : undefined;
   if (t) {
     out.push({
-      title: 'Trench',
+      title: 'Cross-section',
       rows: [
-        ['Trench', t.present ? `${v(t.topWidth_m, 2)} m wide at the surface, ${v(t.bottomWidth_m, 2)} m at the bottom, ${v(t.depth_m, 2)} m deep` : 'none (cables in the layered ground)'],
         ['Surface', t.surface === 'grass' ? 'Grass' : t.surface === 'asphalt' ? 'Asphalt road' : 'Paving'],
-        ['Cables', t.ducted ? 'in ducts' : 'direct in the fill'],
-        ['Main circuit position', `x ${v(inst.mainX_m ?? 0, 2, 'm')}, depth ${v(inst.depth_m, 2, 'm')}`],
+        ['Main circuit', `x ${v(inst.mainX_m ?? 0, 2, 'm')}, depth ${v(inst.depth_m, 2, 'm')}, ${t.ducted ? 'in ducts' : 'direct'}${inst.rotated ? (inst.formation === 'flat' ? ', vertical' : ', point down') : ''}`],
       ],
     });
     let top = 0;
@@ -244,11 +242,25 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
         return [l.name, `${GROUND[l.material].label}, ρ ${v(l.rho, 2, 'K·m/W')}, ${label}`];
       }),
     });
-    if (t.present && t.zones.length)
-      out.push({
-        title: 'Trench fill',
-        rows: t.zones.map((z) => [z.name, `${GROUND[z.material].label}, ρ ${v(z.rho, 2, 'K·m/W')}, ${v(z.top_m, 2)}–${v(z.bottom_m, 2, 'm')}`]),
+    if (t.shapes.length) {
+      const rows: [string, string][] = [];
+      t.shapes.forEach((sh) => {
+        const mat = `${GROUND[sh.material].label}, ρ ${v(sh.rho, 2, 'K·m/W')}`;
+        const geo =
+          sh.kind === 'trench'
+            ? `trench ${v(sh.topWidth_m ?? sh.width_m, 2)} m wide at the top, ${v(sh.width_m, 2)} m at the bottom, ${v(sh.y_m, 2)}–${v(sh.y_m + sh.height_m, 2, 'm')} deep, centre x ${v(sh.x_m, 2, 'm')}`
+            : sh.kind === 'rect'
+              ? `rectangle ${v(sh.width_m, 2)} × ${v(sh.height_m, 2, 'm')}, top at ${v(sh.y_m, 2, 'm')}, centre x ${v(sh.x_m, 2, 'm')}`
+              : sh.kind === 'circle'
+                ? `circle ⌀ ${v(sh.width_m, 2, 'm')} at x ${v(sh.x_m, 2, 'm')}, depth ${v(sh.y_m, 2, 'm')}`
+                : `polygon through ${(sh.points ?? []).map(([x, y]) => `(${v(x, 2)}, ${v(y, 2)})`).join(' ')} m`;
+        rows.push([sh.name, `${geo}; ${mat}`]);
+        (sh.bands ?? []).forEach((bd) =>
+          rows.push([`  ${bd.name}`, `fill band ${v(bd.top_m, 2)}–${v(bd.bottom_m, 2, 'm')}; ${GROUND[bd.material].label}, ρ ${v(bd.rho, 2, 'K·m/W')}`]),
+        );
       });
+      out.push({ title: 'Shapes (later ones on top)', rows });
+    }
     if (t.slabs.length)
       out.push({
         title: 'Tiles and tape',
@@ -258,12 +270,18 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
         ]),
       });
   }
+  if (inst.type !== 'air' && inst.heatSources?.length) {
+    out.push({
+      title: 'Other heat sources',
+      rows: inst.heatSources.map((h) => [h.name, `${v(h.W, 0, 'W/m')}, ⌀ ${v(h.diameter_mm, 0, 'mm')}, x ${v(h.x_m, 2, 'm')}, depth ${v(h.depth_m, 2, 'm')}`]),
+    });
+  }
   if (inst.type !== 'air' && inst.circuits.length) {
     out.push({
       title: 'Other circuits',
       rows: inst.circuits.map((c) => [
         c.name,
-        `${(c.cable?.name ?? 'Same cable as C1').replace(/^Example: /, '')}; x ${v(c.x_m, 2, 'm')}, depth ${v(c.depth_m, 2, 'm')}; ${c.formation}${c.touching ? ' touching' : `, ${v(c.spacing_mm, 0, 'mm')}`}; ${bondLabel[c.bonding].toLowerCase()}; ${c.load === 'fixed' ? `fixed ${v(c.current_A, 0, 'A')}` : 'rated'}`,
+        `${(c.cable?.name ?? 'Same cable as C1').replace(/^Example: /, '')}; x ${v(c.x_m, 2, 'm')}, depth ${v(c.depth_m, 2, 'm')}; ${c.formation}${c.rotated ? (c.formation === 'flat' ? ' vertical' : ' point down') : ''}${c.touching ? ' touching' : `, ${v(c.spacing_mm, 0, 'mm')}`}${c.ducted ? `, in ducts ⌀ ${v(c.duct?.outerD_mm ?? inst.duct.outerD_mm, 0, 'mm')}` : c.ducted === false ? ', direct' : ''}; ${bondLabel[c.bonding].toLowerCase()}; ${c.load === 'fixed' ? `fixed ${v(c.current_A, 0, 'A')}` : 'rated'}`,
       ]),
     });
   }

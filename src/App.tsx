@@ -1,14 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   calculateRating,
-  defaultTrench,
+  migrateTrench,
   type CableSpec,
   type CircuitSpec,
   type InstallationSpec,
-  type RouteSpec,
 } from './engine';
-import { RouteCard } from './ui/RouteCard';
-import { RouteForm } from './ui/RouteForm';
 import { DEFAULT_INSTALLATION, EXAMPLE_CABLES } from './engine/presets';
 import { CableForm } from './ui/CableForm';
 import { CircuitsForm } from './ui/CircuitsForm';
@@ -17,7 +14,7 @@ import { Results } from './ui/Results';
 import { amps } from './ui/format';
 import { safeName, saveFile, saveMessage } from './ui/save';
 
-type Tab = 'cable' | 'installation' | 'circuits' | 'route' | 'library';
+type Tab = 'cable' | 'installation' | 'circuits' | 'library';
 
 const STORE_KEY = 'ampacity-workbench.v1';
 const framed = (() => {
@@ -58,6 +55,9 @@ function normalizeCircuit(c: Partial<CircuitSpec>, i: number): CircuitSpec {
     crossBondLambda1: c.crossBondLambda1 ?? null,
     load: c.load === 'fixed' ? 'fixed' : 'rated',
     current_A: typeof c.current_A === 'number' ? c.current_A : 0,
+    ducted: typeof c.ducted === 'boolean' ? c.ducted : undefined,
+    duct: c.duct && typeof c.duct === 'object' ? c.duct : undefined,
+    rotated: !!c.rotated,
   };
 }
 
@@ -72,16 +72,20 @@ function normalizeInst(i: Partial<InstallationSpec> | undefined): InstallationSp
     air: { ...base.air, ...(i.air ?? {}) },
     ratingMode: i.ratingMode === 'equal-current' ? 'equal-current' : 'own-limit',
     circuits: Array.isArray(i.circuits) ? i.circuits.map(normalizeCircuit) : [],
-    trench:
-      i.trench && typeof i.trench === 'object'
-        ? {
-            ...defaultTrench(base),
-            ...i.trench,
-            layers: Array.isArray(i.trench.layers) && i.trench.layers.length ? i.trench.layers : defaultTrench(base).layers,
-            zones: Array.isArray(i.trench.zones) ? i.trench.zones : [],
-            slabs: Array.isArray(i.trench.slabs) ? i.trench.slabs : [],
-          }
-        : undefined,
+    trench: i.trench && typeof i.trench === 'object' ? migrateTrench(i.trench, i.soilRho ?? base.soilRho) : undefined,
+    heatSources: Array.isArray(i.heatSources)
+      ? i.heatSources
+          .filter((h) => h && typeof h === 'object')
+          .map((h, k) => ({
+            id: typeof h.id === 'string' ? h.id : `h${k}`,
+            name: typeof h.name === 'string' ? h.name : `Heat source ${k + 1}`,
+            x_m: Number(h.x_m) || 0,
+            depth_m: Number(h.depth_m) || 1,
+            diameter_mm: Number(h.diameter_mm) || 200,
+            W: Number(h.W) || 0,
+          }))
+      : [],
+    rotated: !!i.rotated,
   };
 }
 
@@ -89,21 +93,6 @@ interface Stored {
   cable: CableSpec;
   inst: InstallationSpec;
   library: CableSpec[];
-  route: RouteSpec;
-}
-
-function normalizeRoute(r: Partial<RouteSpec> | undefined): RouteSpec {
-  if (!r || !Array.isArray(r.sections)) return { sections: [], activeId: null };
-  const sections = r.sections
-    .filter((x) => x && typeof x === 'object')
-    .map((x, i) => ({
-      id: typeof x.id === 'string' ? x.id : `s${i}-${Math.random().toString(36).slice(2, 8)}`,
-      name: typeof x.name === 'string' ? x.name : `Section ${i + 1}`,
-      length_m: typeof x.length_m === 'number' ? x.length_m : 100,
-      inst: normalizeInst(x.inst),
-    }));
-  const activeId = sections.some((x) => x.id === r.activeId) ? (r.activeId as string) : null;
-  return { sections, activeId };
 }
 
 function loadStored(): Stored {
@@ -115,21 +104,52 @@ function loadStored(): Stored {
         cable: normalizeCable(s.cable),
         inst: normalizeInst(s.inst),
         library: Array.isArray(s.library) ? s.library.map(normalizeCable) : [],
-        route: normalizeRoute(s.route),
       };
     }
   } catch {
     /* storage unavailable */
   }
-  return { cable: clone(EXAMPLE_CABLES[0]), inst: clone(DEFAULT_INSTALLATION), library: [], route: { sections: [], activeId: null } };
+  return { cable: clone(EXAMPLE_CABLES[0]), inst: clone(DEFAULT_INSTALLATION), library: [] };
 }
 
 export function App() {
   const initial = useMemo(loadStored, []);
   const [cable, setCable] = useState<CableSpec>(initial.cable);
-  const [inst, setInst] = useState<InstallationSpec>(initial.inst);
+  const [inst, setInstRaw] = useState<InstallationSpec>(initial.inst);
+  // Undo history for the installation; quick successive edits (a drag) count as one step
+  const instRef = useRef(inst);
+  instRef.current = inst;
+  const hist = useRef<{ past: InstallationSpec[]; future: InstallationSpec[]; last: number }>({ past: [], future: [], last: 0 });
+  const setInst = useCallback((next: InstallationSpec) => {
+    const cur = instRef.current;
+    if (next === cur) return;
+    const h = hist.current;
+    const now = Date.now();
+    if (now - h.last > 600) {
+      h.past.push(cur);
+      if (h.past.length > 150) h.past.shift();
+    }
+    h.last = now;
+    h.future = [];
+    setInstRaw(next);
+  }, []);
+  const undo = useCallback(() => {
+    const h = hist.current;
+    const prev = h.past.pop();
+    if (!prev) return;
+    h.future.push(instRef.current);
+    h.last = 0;
+    setInstRaw(prev);
+  }, []);
+  const redo = useCallback(() => {
+    const h = hist.current;
+    const next = h.future.pop();
+    if (!next) return;
+    h.past.push(instRef.current);
+    h.last = 0;
+    setInstRaw(next);
+  }, []);
   const [library, setLibrary] = useState<CableSpec[]>(initial.library);
-  const [route, setRoute] = useState<RouteSpec>(initial.route);
   const [tab, setTab] = useState<Tab>('cable');
   const [message, setMessage] = useState<string>('');
   const [paste, setPaste] = useState('');
@@ -137,38 +157,11 @@ export function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ cable, inst, library, route }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ cable, inst, library }));
     } catch {
       /* storage unavailable */
     }
-  }, [cable, inst, library, route]);
-
-  // Edits to the installation go to the route section being edited.
-  useEffect(() => {
-    if (!route.activeId) return;
-    setRoute((r) => {
-      const sec = r.sections.find((x) => x.id === r.activeId);
-      if (!sec || sec.inst === inst) return r;
-      return { ...r, sections: r.sections.map((x) => (x.id === r.activeId ? { ...x, inst } : x)) };
-    });
-  }, [inst, route.activeId]);
-
-  const editSection = (id: string | null) => {
-    if (id) {
-      const sec = route.sections.find((x) => x.id === id);
-      if (sec) setInst(sec.inst);
-    }
-    setRoute((r) => ({ ...r, activeId: id }));
-  };
-
-  const routeRatings = useMemo(() => {
-    const out: Record<string, number> = {};
-    for (const sec of route.sections) {
-      const r = calculateRating(cable, sec.inst);
-      out[sec.id] = r.ok ? r.I : NaN;
-    }
-    return out;
-  }, [cable, route.sections]);
+  }, [cable, inst, library]);
 
   useEffect(() => {
     if (!message) return;
@@ -178,14 +171,13 @@ export function App() {
 
   const result = useMemo(() => calculateRating(cable, inst), [cable, inst]);
   const projectJson = () =>
-    JSON.stringify({ format: 'ampacity-workbench', version: 2, cable, inst, route }, null, 2);
+    JSON.stringify({ format: 'ampacity-workbench', version: 3, cable, inst }, null, 2);
 
   const importJson = (text: string) => {
     try {
       const data = JSON.parse(text);
       if (data.cable) setCable(normalizeCable(data.cable));
       if (data.inst) setInst(normalizeInst(data.inst));
-      setRoute(normalizeRoute(data.route));
       if (Array.isArray(data.library)) setLibrary(data.library.map(normalizeCable));
       if (!data.cable && !data.inst && !Array.isArray(data.library)) throw new Error('no project');
       setMessage('Project imported');
@@ -252,7 +244,6 @@ export function App() {
                 ['cable', 'Cable'],
                 ['installation', 'Installation'],
                 ['circuits', inst.circuits.length ? `Circuits (${inst.circuits.length + 1})` : 'Circuits'],
-                ['route', route.sections.length ? `Route (${route.sections.length})` : 'Route'],
                 ['library', 'Library'],
               ] as [Tab, string][]
             ).map(([k, label]) => (
@@ -274,9 +265,6 @@ export function App() {
             {tab === 'cable' && <CableForm cable={cable} onChange={setCable} />}
             {tab === 'installation' && <InstallationForm inst={inst} cable={cable} onChange={setInst} />}
             {tab === 'circuits' && <CircuitsForm inst={inst} cable={cable} library={library} onChange={setInst} />}
-            {tab === 'route' && (
-              <RouteForm route={route} inst={inst} ratings={routeRatings} onRoute={setRoute} onEdit={editSection} />
-            )}
             {tab === 'library' && (
               <div className="form library">
                 <section className="form-section">
@@ -417,8 +405,10 @@ export function App() {
             inst={inst}
             result={result}
             onInstChange={setInst}
-            route={route}
-            routeCard={<RouteCard route={route} ratings={routeRatings} onEdit={editSection} />}
+            undo={undo}
+            redo={redo}
+            canUndo={hist.current.past.length > 0}
+            canRedo={hist.current.future.length > 0}
           />
           <footer className="foot">
             Steady-state rating to IEC 60287-1-1 and IEC 60287-2-1 for circuits of three single-core cables without

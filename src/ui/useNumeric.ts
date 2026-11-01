@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  bodyLosses,
   numericField,
   numericRating,
   type CableSpec,
@@ -25,10 +26,8 @@ export interface NumericState {
   error?: string;
 }
 
-const fieldFor = (result: RatingResult, numeric: NumericResult, ambient: number) => {
-  const W = result.system ? result.system.circuits.flatMap((c) => [c.W, c.W, c.W]) : [result.losses.W, result.losses.W, result.losses.W];
-  return numericField(numeric, W, ambient);
-};
+const fieldFor = (inst: InstallationSpec, result: RatingResult, numeric: NumericResult) =>
+  numericField(numeric, bodyLosses(inst, result), inst.ambient_C);
 
 /** Runs the numerical ground model for a trench layout, after the inputs have settled. */
 export function useNumeric(cable: CableSpec, inst: InstallationSpec, iec: RatingResult): NumericState {
@@ -52,7 +51,7 @@ export function useNumeric(cable: CableSpec, inst: InstallationSpec, iec: Rating
         if (id !== job.current) return;
         setState({
           status: result.ok ? 'ready' : 'error',
-          data: { result, numeric, field: fieldFor(result, numeric, inst.ambient_C), key },
+          data: { result, numeric, field: fieldFor(inst, result, numeric), key },
           fresh: true,
           error: result.ok ? undefined : result.errors[0],
         });

@@ -34,20 +34,30 @@ export interface Point {
   y: number;
 }
 
-/** Positions of the three cables (mm). Trefoil has its apex at the top. */
-export function circuitPositions(formation: Formation, s: number, depth: number): Point[] {
+/**
+ * Positions of the three cables (mm). Trefoil has its apex at the top and flat formation is
+ * horizontal; rotated gives a trefoil with the apex at the bottom, or a vertical flat formation.
+ */
+export function circuitPositions(formation: Formation, s: number, depth: number, rotated = false): Point[] {
   if (formation === 'flat') {
-    return [
-      { x: -s, y: depth },
-      { x: 0, y: depth },
-      { x: s, y: depth },
-    ];
+    return rotated
+      ? [
+          { x: 0, y: depth - s },
+          { x: 0, y: depth },
+          { x: 0, y: depth + s },
+        ]
+      : [
+          { x: -s, y: depth },
+          { x: 0, y: depth },
+          { x: s, y: depth },
+        ];
   }
   const h = s / Math.sqrt(3);
+  const k = rotated ? -1 : 1;
   return [
-    { x: -s / 2, y: depth + h / 2 },
-    { x: 0, y: depth - h },
-    { x: s / 2, y: depth + h / 2 },
+    { x: -s / 2, y: depth + (k * h) / 2 },
+    { x: 0, y: depth - k * h },
+    { x: s / 2, y: depth + (k * h) / 2 },
   ];
 }
 
