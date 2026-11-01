@@ -230,10 +230,10 @@ export function App() {
         </div>
       </header>
 
-      <a className="mobile-bar" href="#results">
+      <a className="mobile-bar" href={inst.type === 'trench' ? '#cross-section' : '#results'}>
         <span className="mobile-bar-k">Permissible current</span>
         <span className="mobile-bar-v">{result.ok ? `${amps(result.I)} A` : 'Incomplete'}</span>
-        <span className="mobile-bar-go">See results</span>
+        <span className="mobile-bar-go">{inst.type === 'trench' ? 'See drawing' : 'See results'}</span>
       </a>
 
       <div className="workspace">

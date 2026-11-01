@@ -91,11 +91,25 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
   const loadI = load ?? (r.ok ? Math.round(r.I * 0.8) : 0);
   const temp = useMemo(() => (r.ok ? calculateTemperature(cable, inst, loadI) : null), [cable, inst, loadI, r.ok]);
 
-  const chips = summaryChips(inst, r);
+  const editor = trench ? (
+    <TrenchEditor
+      cable={cable}
+      inst={inst}
+      iec={r}
+      num={num}
+      pal={pal}
+      onChange={onInstChange}
+      undo={undo}
+      redo={redo}
+      canUndo={canUndo}
+      canRedo={canRedo}
+    />
+  ) : null;
 
   if (!r.ok) {
     return (
       <div className="results">
+        {editor}
         <section className="card summary is-error" aria-live="polite">
           <p className="eyebrow">Permissible current</p>
           <p className="hero-figure">–</p>
@@ -107,18 +121,20 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
               </li>
             ))}
           </ul>
-          {trench && <p className="summary-sub">Fix the inputs listed above; the trench editor appears once the rating can be calculated.</p>}
+          {trench && <p className="summary-sub">Fix them in the cross-section above, in the input tabs, or undo the last change.</p>}
         </section>
       </div>
     );
   }
 
+  const chips = summaryChips(inst, r);
   const { sections, lambda } = calcSections(inst, r);
 
   const over = temp && temp.ok && temp.conductor > cable.maxTemp_C + 1e-6;
 
   return (
     <div className="results">
+      {editor}
       <section className="card summary" aria-live="polite">
         <div className="summary-main">
           <p className="eyebrow">
@@ -301,19 +317,6 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
           </ul>
         </section>
       )}
-
-      {trench && <TrenchEditor
-          cable={cable}
-          inst={inst}
-          iec={r}
-          num={num}
-          pal={pal}
-          onChange={onInstChange}
-          undo={undo}
-          redo={redo}
-          canUndo={canUndo}
-          canRedo={canRedo}
-        />}
 
       <section className={`card drawings${trench ? ' drawings-cable-only' : ''}`} aria-label="Drawings">
         <div className="drawing-cell">

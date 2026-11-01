@@ -63,9 +63,10 @@ one together with T4 of the hottest position, which is conservative.
 
 ## Cross-section builder
 
-Choose **Trench layout** as the installation method to build the cross-section in a
-drag-and-drop editor next to the results. Start from a template or from scratch, then add,
-move, resize and reorder objects:
+Choose **Trench layout** as the installation method. The **Cross-section** panel opens at
+the top of the results, with the IEC and numerical ratings above the drawing (on a phone,
+use *Go to the drawing* or *See drawing* in the bar at the top). Start from a template or
+from scratch, then add, move, resize and reorder objects:
 
 - **Ground layers** from the surface down (topsoil, clay, sand…), each with its own
   thermal resistivity. The bottom layer continues downwards. Drag a boundary to change a
@@ -95,7 +96,10 @@ move, resize and reorder objects:
 Editing: undo and redo (Ctrl+Z, Ctrl+Y, also for every other input), duplicate (Ctrl+D),
 delete, arrow keys to nudge, snapping to 10, 50 or 100 mm or off, zoom (buttons or
 Ctrl + wheel), pan by dragging the ground, and an object list to select anything that is
-hard to reach. Labels and the temperature field can be switched off.
+hard to reach. Labels and the temperature field can be switched off. If a change makes the
+layout impossible to rate (two circuits overlapping, a cable above the ground, a heat
+source touching a cable), the drawing stays on screen with the problem and an *Undo last
+change* button above it.
 
 Material resistivities default to typical values (concrete and PE from IEC 60287-2-1
 Table 1, the rest are typical design values). Replace them with measured site values.

@@ -1013,12 +1013,106 @@ textarea {
 }
 
 /* ---------- Trench editor ---------- */
+.trench-card {
+  scroll-margin-top: 72px;
+}
+.trench-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 10px;
+}
+.trench-head h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-lg);
+}
+.trench-rating {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+.tr-fig {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.tr-k {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+.tr-v {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--fs-xl);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.tr-fig.is-bad .tr-v {
+  color: var(--bad);
+}
 .trench-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 18px;
+  gap: 6px 18px;
   margin-bottom: 12px;
+}
+.trench-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 4px;
+  background: var(--bad-soft);
+  border: 1px solid color-mix(in oklab, var(--bad) 35%, transparent);
+  font-size: var(--fs-sm);
+}
+.trench-alert p {
+  margin: 0;
+  max-width: 70ch;
+}
+.trench-alert strong {
+  color: var(--bad);
+}
+.trench-viewbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+}
+.trench-viewbar .toggle {
+  width: auto;
+}
+.trench-status {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.trench-status.is-bad {
+  color: var(--bad);
+}
+.trench-hint {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+.only-narrow {
+  display: none;
+}
+@media (max-width: 960px) {
+  .only-narrow {
+    display: inline-flex;
+  }
 }
 .tool-group {
   display: flex;

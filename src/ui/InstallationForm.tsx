@@ -54,10 +54,20 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
           onChange={(type) => set(type === 'trench' && !i.trench ? { type, trench: defaultTrench(i) } : { type })}
         />
         {trench && (
-          <p className="field-hint field-wide">
-            Build the trench in the editor next to the results: ground layers, fill zones, cover tiles and cable
-            positions. The rating is shown by the IEC method and by a numerical ground model.
-          </p>
+          <div className="field-wide trench-hint">
+            <p className="field-hint">
+              Draw the cross-section in the Cross-section panel at the top of the results: ground layers, trenches and
+              other shapes, cover tiles, circuits and heat sources. It is rated by the IEC method and by a numerical
+              ground model.
+            </p>
+            <button
+              type="button"
+              className="btn only-narrow"
+              onClick={() => document.getElementById('cross-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            >
+              Go to the drawing ↓
+            </button>
+          </div>
         )}
         <NumField
           id="amb"

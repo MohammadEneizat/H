@@ -1,7 +1,16 @@
 export * from './types';
 export * from './materials';
 export { deriveGeometry } from './geometry';
-export { calculateRating, calculateTemperature, hasOtherCircuits, sweepRating, type RatingOptions, type SweepParam } from './solver';
+export {
+  calculateRating,
+  calculateTemperature,
+  hasOtherCircuits,
+  layoutCircuits,
+  sweepRating,
+  type CircuitLayout,
+  type RatingOptions,
+  type SweepParam,
+} from './solver';
 export * from './trench';
 export * as losses from './losses';
 export * as thermal from './thermal';

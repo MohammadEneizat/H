@@ -4,6 +4,7 @@ import {
   calculateTemperature,
   circleShape,
   exactInfluence,
+  layoutCircuits,
   migrateTrench,
   numericOptions,
   numericRating,
@@ -112,6 +113,26 @@ describe('trench layouts', () => {
 
 describe('flexible cross-section', () => {
   const base = (): InstallationSpec => TRENCH_TEMPLATES[0].apply({ ...DEFAULT_INSTALLATION });
+
+  it('places every circuit for drawing even when the rating fails', () => {
+    const inst = base();
+    const rated = calculateRating(MV, inst);
+    expect(rated.ok).toBe(true);
+    const layout = layoutCircuits(MV, inst);
+    expect(layout.map((c) => c.name)).toEqual(rated.system!.circuits.map((c) => c.name.replace(' (main)', '')));
+    layout.forEach((c, i) =>
+      c.positions.forEach((p, k) => {
+        expect(p.x).toBeCloseTo(rated.system!.circuits[i].positions[k].x, 6);
+        expect(p.y).toBeCloseTo(rated.system!.circuits[i].positions[k].y, 6);
+      }),
+    );
+    // Move C2 onto C1: no rating, but the layout is still available
+    const clash = { ...inst, circuits: inst.circuits.map((c, i) => (i === 0 ? { ...c, x_m: inst.mainX_m ?? 0, depth_m: inst.depth_m } : c)) };
+    expect(calculateRating(MV, clash).ok).toBe(false);
+    const drawn = layoutCircuits(MV, clash);
+    expect(drawn).toHaveLength(layout.length);
+    expect(drawn[1].positions[1].x).toBeCloseTo(drawn[0].positions[1].x, 6);
+  });
 
   it('converts a project saved with the older single-trench format', () => {
     const old = {

@@ -1071,6 +1071,53 @@ function calculateSystemRating(cable: CableSpec, inst: InstallationSpec, opts: R
   return result;
 }
 
+/** Where one circuit's cables lie and how big they are, without rating it. */
+export interface CircuitLayout {
+  name: string;
+  positions: { x: number; y: number }[];
+  /** Cable and duct outer diameters (mm) */
+  De: number;
+  ductD?: number;
+  ductInnerD?: number;
+  geometry: CableGeometry;
+}
+
+/**
+ * Positions and sizes of the main circuit and every other circuit, worked out from the
+ * inputs alone. Used to draw a layout whose rating cannot be calculated (for example
+ * because two circuits overlap), so the drawing stays available to fix it.
+ */
+export function layoutCircuits(cable: CableSpec, inst: InstallationSpec): CircuitLayout[] {
+  const base = inst.type === 'trench' ? trenchToIec(inst).iec : inst;
+  const list: { name: string; cable: CableSpec; ci: InstallationSpec }[] = [
+    { name: 'C1', cable, ci: circuitInstallation(base, null) },
+  ];
+  if (base.type !== 'air')
+    (base.circuits ?? []).forEach((c, i) =>
+      list.push({ name: c.name || `C${i + 2}`, cable: c.cable ?? cable, ci: circuitInstallation(base, c) }),
+    );
+  const out: CircuitLayout[] = [];
+  for (const { name, cable: cab, ci } of list) {
+    try {
+      const m = buildModel(cab, ci);
+      const inDucts = ci.type === 'ducts' || ci.type === 'ductbank';
+      const positions = m.positions.filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (positions.length !== 3 || !(m.geometry.De > 0)) continue;
+      out.push({
+        name,
+        positions,
+        De: m.geometry.De,
+        ductD: inDucts && ci.duct.outerD_mm > 0 ? ci.duct.outerD_mm : undefined,
+        ductInnerD: inDucts && ci.duct.innerD_mm > 0 ? ci.duct.innerD_mm : undefined,
+        geometry: m.geometry,
+      });
+    } catch {
+      // Inputs too incomplete to place this circuit
+    }
+  }
+  return out;
+}
+
 /** Permissible continuous current of the main circuit (100 % load factor). */
 export function calculateRating(cable: CableSpec, inst: InstallationSpec, opts: RatingOptions = {}): RatingResult {
   // Heat sources belong to the cross-section layout

@@ -29,6 +29,9 @@ export interface NumericState {
 const fieldFor = (inst: InstallationSpec, result: RatingResult, numeric: NumericResult) =>
   numericField(numeric, bodyLosses(inst, result), inst.ambient_C);
 
+/** Set once a worker fails to start (for example when the page does not allow workers). */
+let workerBlocked = false;
+
 /** Runs the numerical ground model for a trench layout, after the inputs have settled. */
 export function useNumeric(cable: CableSpec, inst: InstallationSpec, iec: RatingResult): NumericState {
   const enabled = inst.type === 'trench' && !!inst.trench && iec.ok;
@@ -59,10 +62,19 @@ export function useNumeric(cable: CableSpec, inst: InstallationSpec, iec: Rating
       const fail = (msg: string) => {
         if (id === job.current) setState((s) => ({ ...s, status: 'error', fresh: false, error: msg }));
       };
+      const inPage = () => {
+        try {
+          const out = numericRating(cable, inst, iec);
+          if (out) done(out.result, out.numeric);
+        } catch (err) {
+          fail(err instanceof Error ? err.message : String(err));
+        }
+      };
       try {
-        if (!worker.current && typeof Worker !== 'undefined') worker.current = new NumericWorker();
+        if (!worker.current && !workerBlocked && typeof Worker !== 'undefined') worker.current = new NumericWorker();
       } catch {
         worker.current = null;
+        workerBlocked = true;
       }
       if (worker.current) {
         worker.current.onmessage = (e: MessageEvent) => {
@@ -71,18 +83,17 @@ export function useNumeric(cable: CableSpec, inst: InstallationSpec, iec: Rating
           if (m.ok) done(m.result, m.numeric);
           else fail(m.error);
         };
-        worker.current.onerror = () => {
+        worker.current.onerror = (e) => {
+          e.preventDefault?.();
+          // The page may not allow workers: run in the page from now on
+          worker.current?.terminate();
           worker.current = null;
-          fail('The numerical model could not run.');
+          workerBlocked = true;
+          if (id === job.current) window.setTimeout(inPage, 0);
         };
         worker.current.postMessage({ id, cable, inst, iec });
       } else {
-        try {
-          const out = numericRating(cable, inst, iec);
-          if (out) done(out.result, out.numeric);
-        } catch (err) {
-          fail(err instanceof Error ? err.message : String(err));
-        }
+        inPage();
       }
     }, 350);
     return () => window.clearTimeout(timer);

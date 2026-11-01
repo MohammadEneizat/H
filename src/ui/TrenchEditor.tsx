@@ -6,6 +6,7 @@ import {
   circleShape,
   deriveGeometry,
   layerBoundaries,
+  layoutCircuits,
   polygonShape,
   rectShape,
   shapeBounds,
@@ -88,27 +89,40 @@ export function trenchScene(
   view: View = { zoom: 1, panX: 0, panY: 0 },
 ): TrenchScene | null {
   const t = inst.trench;
-  if (!t || !iec.ok) return null;
-  const useNum = !!num?.fresh && !!num.data?.result.ok;
+  if (!t) return null;
+  const useNum = iec.ok && !!num?.fresh && !!num.data?.result.ok;
   const r = useNum ? num!.data!.result : iec;
-  const base = r.system?.circuits ?? [
-    {
-      name: 'C1',
-      positions: r.positions,
-      De: r.geometry.De,
-      ductD: t.ducted ? inst.duct.outerD_mm : undefined,
-      ductInnerD: t.ducted ? inst.duct.innerD_mm : undefined,
-      hottest: r.thermal.t4.hottest,
-      hottestTemp: r.temperatures.conductor,
-      I: r.I,
-    },
-  ];
+  // Without a rating, draw the circuits where the inputs put them so the layout can be fixed
+  const base: {
+    name: string;
+    positions: { x: number; y: number }[];
+    De: number;
+    ductD?: number;
+    ductInnerD?: number;
+    hottest: number;
+    hottestTemp: number;
+    I: number;
+    geo?: CableGeometry;
+  }[] = !iec.ok
+    ? layoutCircuits(cable, inst).map((c) => ({ ...c, hottest: -1, hottestTemp: NaN, I: NaN, geo: c.geometry }))
+    : (r.system?.circuits ?? [
+        {
+          name: 'C1',
+          positions: r.positions,
+          De: r.geometry.De,
+          ductD: t.ducted ? inst.duct.outerD_mm : undefined,
+          ductInnerD: t.ducted ? inst.duct.innerD_mm : undefined,
+          hottest: r.thermal.t4.hottest,
+          hottestTemp: r.temperatures.conductor,
+          I: r.I,
+        },
+      ]);
   const groups: Group[] = base.map((c, i) => {
     const cab = i === 0 ? cable : (inst.circuits[i - 1]?.cable ?? cable);
     return {
       name: c.name.replace(' (main)', ''),
       positions: c.positions,
-      geo: i === 0 ? iec.geometry : deriveGeometry(cab).geometry,
+      geo: c.geo ?? (i === 0 ? iec.geometry : deriveGeometry(cab).geometry),
       D: c.ductD ?? c.De,
       ductD: c.ductD,
       ductInnerD: c.ductInnerD,
@@ -159,7 +173,7 @@ export function trenchScene(
 
   let field: FieldSourceLike | null = null;
   if (useNum) field = { fn: num!.data!.field, sources: num!.data!.numeric.objects };
-  else if (iec.field) field = analyticField(iec.field);
+  else if (iec.ok && iec.field) field = analyticField(iec.field);
   let heat: TrenchScene['heat'] = null;
   if (field) {
     const probe = sampleField(field.fn, { ...region, y0: Math.max(0, region.y0) }, 120, 90);
@@ -311,7 +325,7 @@ export function TrenchSvg({
       const bh = Math.max(...ys) - Math.min(...ys) + g.D + sw * 12;
       const gx = xs.reduce((a, b) => a + b, 0) / 3;
       const ly = below.has(gi) ? by0 + bh + fs * 1.1 : by0 - fs * 0.4;
-      const text = `${g.name} · ${amps(g.I)} A · ${fmt(g.temp, 0)} °C`;
+      const text = Number.isFinite(g.I) ? `${g.name} · ${amps(g.I)} A · ${fmt(g.temp, 0)} °C` : g.name;
       const tw = text.length * fs * 0.56;
       return { gi, bx0, by0, bw, bh, gx, ly, text, box: { x0: gx - tw / 2, x1: gx + tw / 2, y0: ly - fs, y1: ly + fs * 0.2 } };
     });
@@ -1261,20 +1275,39 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
   const canDelete = !!sel && !(sel.kind === 'circuit' && sel.index === 0) && !(sel.kind === 'layer' && t.layers.length <= 1);
   const isSel = (k: string, v: string | number) => !!sel && sel.kind === k && (('id' in sel && sel.id === v) || ('index' in sel && sel.index === v));
 
+  const numText =
+    num.status === 'error'
+      ? 'Numerical model failed'
+      : !iec.ok
+        ? 'Numerical model waits for a valid layout'
+        : num.fresh && num.data
+          ? `Numerical model · ${(num.data.numeric.nx * num.data.numeric.ny).toLocaleString('en-GB')} cells · ${Math.round(num.data.numeric.ms)} ms`
+          : 'Updating numerical model…';
+  const numI = iec.ok && num.fresh && num.data?.result.ok ? num.data.result.I : null;
+
   return (
-    <section className="card trench-card" aria-labelledby="trench-title">
-      <header className="card-head">
-        <div>
-          <h2 id="trench-title">Cross-section</h2>
-          <p className="card-sub">Build the ground around the cables. The IEC rating updates at once and the numerical model a moment later.</p>
+    <section className="card trench-card" id="cross-section" aria-labelledby="trench-title">
+      <header className="trench-head">
+        <h2 id="trench-title">Cross-section</h2>
+        <div className="trench-rating" aria-live="polite">
+          {iec.ok ? (
+            <>
+              <span className="tr-fig">
+                <span className="tr-k">IEC 60287</span>
+                <span className="tr-v">{amps(iec.I)} A</span>
+              </span>
+              <span className="tr-fig">
+                <span className="tr-k">Numerical</span>
+                <span className="tr-v">{numI !== null ? `${amps(numI)} A` : num.status === 'error' ? 'failed' : '…'}</span>
+              </span>
+            </>
+          ) : (
+            <span className="tr-fig is-bad">
+              <span className="tr-k">Rating</span>
+              <span className="tr-v">–</span>
+            </span>
+          )}
         </div>
-        <span className={`pill ${num.status === 'error' ? 'pill-bad' : num.fresh ? 'pill-ok' : 'pill-note'}`} role="status">
-          {num.status === 'error'
-            ? 'Numerical model failed'
-            : num.fresh && num.data
-              ? `Numerical model · ${(num.data.numeric.nx * num.data.numeric.ny).toLocaleString('en-GB')} cells · ${Math.round(num.data.numeric.ms)} ms`
-              : 'Updating numerical model…'}
-        </span>
       </header>
       <div className="trench-toolbar" role="toolbar" aria-label="Cross-section tools">
         <div className="tool-group">
@@ -1313,8 +1346,17 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           <button type="button" className="btn btn-quiet btn-danger" onClick={remove} disabled={!canDelete} title="Delete">
             Delete
           </button>
+          <label htmlFor="tr-snap" className="tool-label">
+            Snap
+          </label>
+          <select id="tr-snap" value={snap} onChange={(e) => setSnap(e.target.value)}>
+            <option value="0">Off</option>
+            <option value="0.01">10 mm</option>
+            <option value="0.05">50 mm</option>
+            <option value="0.1">100 mm</option>
+          </select>
         </div>
-        <div className="tool-group">
+        <div className="tool-group tool-add">
           <span className="tool-label">Add</span>
           <button type="button" className="btn btn-quiet" onClick={addCircuit}>
             Circuit
@@ -1361,30 +1403,21 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
             Layer
           </button>
         </div>
-        <div className="tool-group">
-          <label htmlFor="tr-snap" className="tool-label">
-            Snap
-          </label>
-          <select id="tr-snap" value={snap} onChange={(e) => setSnap(e.target.value)}>
-            <option value="0">Off</option>
-            <option value="0.01">10 mm</option>
-            <option value="0.05">50 mm</option>
-            <option value="0.1">100 mm</option>
-          </select>
-          <span className="tool-label">Zoom</span>
-          <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.max(0.25, v.zoom / 1.4) }))} aria-label="Zoom out">
-            −
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.min(12, v.zoom * 1.4) }))} aria-label="Zoom in">
-            +
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>
-            Fit
-          </button>
-          <Toggle id="tr-heat" label="Temperatures" checked={showHeat} onChange={setShowHeat} />
-          <Toggle id="tr-labels" label="Labels" checked={showLabels} onChange={setShowLabels} />
-        </div>
       </div>
+      {!iec.ok && (
+        <div className="trench-alert" role="alert">
+          <p>
+            <strong>The rating cannot be calculated: </strong>
+            {iec.errors[0]}
+            {iec.errors.length > 1 ? ` (${iec.errors.length - 1} more listed below)` : ''}
+          </p>
+          {canUndo && (
+            <button type="button" className="btn" onClick={undo}>
+              ↶ Undo last change
+            </button>
+          )}
+        </div>
+      )}
       <div className="trench-body">
         <div
           className="trench-canvas"
@@ -1413,6 +1446,27 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
               title={scene.numeric ? 'Ground temperature, numerical model, °C' : 'Ground temperature, IEC superposition (numerical model updating), °C'}
             />
           )}
+          <div className="trench-viewbar">
+            <div className="tool-group">
+              <span className="tool-label">Zoom</span>
+              <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.max(0.25, v.zoom / 1.4) }))} aria-label="Zoom out">
+                −
+              </button>
+              <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.min(12, v.zoom * 1.4) }))} aria-label="Zoom in">
+                +
+              </button>
+              <button type="button" className="btn btn-quiet" onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>
+                Fit
+              </button>
+            </div>
+            <div className="tool-group">
+              <Toggle id="tr-heat" label="Temperatures" checked={showHeat} onChange={setShowHeat} />
+              <Toggle id="tr-labels" label="Labels" checked={showLabels} onChange={setShowLabels} />
+            </div>
+            <span className={`trench-status${num.status === 'error' ? ' is-bad' : ''}`} role="status">
+              {numText}
+            </span>
+          </div>
         </div>
         <aside className="trench-inspector" aria-label="Selected item and object list">
           <h3>{title}</h3>
