@@ -61,6 +61,56 @@ one together with T4 of the hottest position, which is conservative.
   needs an internet connection. Text uses subsets of DejaVu Sans (`public/fonts`, Bitstream
   Vera licence) so Greek letters and symbols print correctly.
 
+## Trench layouts
+
+Choose **Trench layout** as the installation method to build the cross-section in a
+drag-and-drop editor next to the results:
+
+- **Ground layers** from the surface down (topsoil, clay, sand…), each with its own
+  thermal resistivity. The bottom layer continues downwards.
+- **The trench**: width at the surface and at the bottom (sloped walls), depth, and
+  position. It can also be switched off for drilled crossings.
+- **Fill zones** inside the trench (sand bedding, cement-bound sand, concrete, excavated
+  soil…), **cover tiles** (polymer or concrete) and **warning tape**. The tape is drawn
+  only; it has no thermal effect.
+- **Circuits**: drag them into place, or type exact positions. Cables can lie directly in
+  the fill or in ducts.
+- **Templates**: MV trench with two circuits in sand, HV trench with CBS backfill, road
+  crossing with ducts in concrete, and a 6 m deep drilled crossing (HDD).
+
+Material resistivities default to typical values (concrete and PE from IEC 60287-2-1
+Table 1, the rest are typical design values). Replace them with measured site values.
+
+Every trench is rated in two ways, shown side by side:
+
+1. **IEC 60287**: the fill zone around the main circuit becomes a rectangular backfill
+   zone (IEC 60287-2-1 2.2.7.3, the duct-bank method), in the native layer at cable
+   depth. Other layers, tiles and sloped walls are not part of this method.
+2. **Numerical 2D ground model** (`src/engine/numeric.ts`): a finite-volume model of the
+   whole cross-section on a non-uniform grid, solved with conjugate gradients and an
+   incomplete-Cholesky preconditioner (see IEC TR 62095 for numerical methods). Cables and
+   ducts are highly conducting bodies; the ground surface and far boundaries are at
+   ambient. One solve per cable gives an influence matrix (rise at each cable per W/m in
+   each cable). The grid and boundary error is removed by comparing a reference solve in
+   uniform ground with the exact image solution. Cable losses, internal thermal
+   resistances and the duct air gap still follow IEC 60287. The model runs in a Web
+   Worker shortly after each change, and its temperature field is drawn in the editor.
+
+Checks in `tests/numeric.test.ts`:
+- a single cable in uniform ground matches the exact solution;
+- a rectangular backfill is within 4 % of the IEC formula;
+- touching cables are within 3 % of the IEC touching-group formula;
+- results converge as the grid is refined;
+- every template is within 5 % of the IEC method.
+
+## Cable route
+
+The **Route** tab builds the route as a chain of sections. Each section stores its own
+installation (any method, including trench layouts) and length. Choose *Edit* on a section
+to change it with the normal tabs and the trench editor. The results show the rating along
+the route with the bottleneck section highlighted. The route rating is the lowest section
+rating (IEC method), and the route is included in the PDF report and in the project file.
+
 ## Several circuits
 
 The **Circuits** tab adds further circuits around the main circuit C1. Each has its own
@@ -118,13 +168,15 @@ be confirmed against your copy of IEC 60287-2-1.
 - Three-core cables, armour (λ2, T2), pipe-type cables
 - Other heat sources (district heating pipes, etc.)
 - Different duct sizes per circuit, and several cables in one duct
+- Soil drying-out in the numerical model, and longitudinal heat flow at short crossings
+- Cross-bonding layout and sheath standing voltages along the route
 - Cyclic and emergency ratings (IEC 60853)
 - Finite-element calculation for non-standard geometries
 
 ## Layout
 
 ```
-src/engine/   IEC 60287 calculation engine and temperature field (no UI dependencies)
+src/engine/   IEC 60287 engine, trench model, numerical ground model (no UI dependencies)
 src/ui/       React components, drawings, heat map
 src/report/   calculation-sheet tables and the PDF report
 public/fonts/ font subsets embedded in the PDF

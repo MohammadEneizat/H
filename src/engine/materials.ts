@@ -265,3 +265,45 @@ export function defaultSkinProximity(
   if (construction === 'solid') return { ks: 1, kp: 1 };
   return { ks: 1, kp: system === 'paper' ? 0.8 : 1 };
 }
+
+export type GroundMaterial =
+  | 'topsoil'
+  | 'clay'
+  | 'sand'
+  | 'sand-dry'
+  | 'gravel'
+  | 'cbs'
+  | 'ftb'
+  | 'concrete'
+  | 'asphalt'
+  | 'subbase'
+  | 'bentonite'
+  | 'polymer'
+  | 'custom';
+
+export interface GroundData {
+  label: string;
+  /** Typical thermal resistivity (K·m/W); replace with site or supplier data */
+  rho: number;
+}
+
+/**
+ * Typical thermal resistivities of ground and backfill materials. Concrete and PE are from
+ * IEC 60287-2-1 Table 1; the others are typical design values and should be replaced with
+ * measured or specified values.
+ */
+export const GROUND: Record<GroundMaterial, GroundData> = {
+  topsoil: { label: 'Topsoil', rho: 1.2 },
+  clay: { label: 'Clay', rho: 1.0 },
+  sand: { label: 'Sand, moist', rho: 1.0 },
+  'sand-dry': { label: 'Sand, dry', rho: 2.5 },
+  gravel: { label: 'Gravel', rho: 1.2 },
+  cbs: { label: 'Cement-bound sand (CBS)', rho: 0.9 },
+  ftb: { label: 'Fluidised thermal backfill', rho: 0.75 },
+  concrete: { label: 'Concrete', rho: 1.0 },
+  asphalt: { label: 'Asphalt', rho: 1.25 },
+  subbase: { label: 'Road sub-base', rho: 1.2 },
+  bentonite: { label: 'Bentonite grout', rho: 1.2 },
+  polymer: { label: 'Polymer (PE) tile', rho: 3.5 },
+  custom: { label: 'Other', rho: 1.0 },
+};

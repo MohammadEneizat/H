@@ -19,7 +19,7 @@ export function CircuitsForm({ inst, cable, library, onChange }: Props) {
   const setCircuit = (id: string, patch: Partial<CircuitSpec>) =>
     set({ circuits: inst.circuits.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
   const num = (v: number | null) => (v === null ? NaN : v);
-  const inDucts = inst.type === 'ducts' || inst.type === 'ductbank';
+  const inDucts = inst.type === 'ducts' || inst.type === 'ductbank' || (inst.type === 'trench' && !!inst.trench?.ducted);
 
   if (inst.type === 'air') {
     return (

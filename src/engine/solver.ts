@@ -1,6 +1,7 @@
 // Steady-state current rating of one three-phase circuit of single-core cables
 // — IEC 60287-1-1 1.4 (clause 4 in the 2023 edition).
 import type { FieldModel, FieldSource } from './field';
+import { trenchToIec } from './trench';
 import { deriveGeometry } from './geometry';
 import { conductorAC, capacitance, dielectricLoss, sheathLossFactors } from './losses';
 import {
@@ -37,6 +38,17 @@ import type {
   T4Breakdown,
   TemperatureResult,
 } from './types';
+
+/** Optional inputs to the rating. */
+export interface RatingOptions {
+  /**
+   * Influence matrix from a numerical thermal model (K·m/W): F[p][k] is the temperature rise at
+   * the surface of cable (or duct) p per W/m in cable k, cables ordered main circuit first, then
+   * the other circuits, three per circuit. It replaces the IEC external thermal resistance
+   * (the duct air gap and duct wall stay as IEC).
+   */
+  numericF?: number[][];
+}
 
 const pick = (v: number | null | undefined, fallback: number): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback;
@@ -269,21 +281,12 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     if (inst.type !== 'ductbank' && pos(inst.depth_m) && top <= 0)
       errors.push('The cables are not fully below the ground surface. Increase the depth.');
 
-    if (inst.type === 'direct') {
-      const gT = groupT4PerCable(inst.soilRho, De, positions, formation, touching, depth);
-      ext = {
-        kind: 'direct',
-        perCable: gT.T4,
-        T4fixed: Math.max(...gT.T4),
-        bankUnit: 0,
-        couplingRho: inst.soilRho,
-        method: gT.method,
-        hottest: gT.hottest,
-      };
-    } else {
-      const duct = DUCTS[inst.duct.material];
-      const Dd = inst.duct.innerD_mm;
-      const Do = inst.duct.outerD_mm;
+    const ducted = inst.type !== 'direct';
+    const duct = DUCTS[inst.duct.material];
+    const Dd = inst.duct.innerD_mm;
+    const Do = inst.duct.outerD_mm;
+    let T4pp = 0;
+    if (ducted) {
       if (!pos(Dd) || !pos(Do)) errors.push('Enter the duct inner and outer diameters.');
       else if (Do <= Dd) errors.push('The duct outer diameter must be larger than the inner diameter.');
       if (pos(Dd) && Dd <= De) errors.push('The duct inner diameter must be larger than the cable diameter.');
@@ -291,59 +294,82 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
         warnings.push(
           `T4' (air in duct) formula of IEC 60287-2-1 is given for cable diameters of 25 mm to 100 mm; this cable is ${De.toFixed(1)} mm.`,
         );
-      const rhoDuct = pick(inst.duct.rho, duct.rho);
-      const T4pp = ductWallT4(rhoDuct, Do, Dd);
-      let perCable: number[];
-      let bankCorrection: number | undefined;
-      let bankUnit = 0;
-      let couplingRho = inst.soilRho;
-      let method: string;
-      let hottest: number;
-      if (inst.type === 'ducts') {
-        const gT = groupT4PerCable(inst.soilRho, Do, positions, formation, touching, depth);
-        perCable = gT.T4.map((t) => T4pp + t);
-        method = `Ducts in soil — ${gT.method}`;
-        hottest = gT.hottest;
-      } else {
-        const W = inst.bank.width_m * 1000;
-        const Hb = inst.bank.height_m * 1000;
-        const rhoC = inst.bank.concreteRho;
-        const bx = pick(inst.bank.centreX_m, 0) * 1000;
-        const bd = pick(inst.bank.centreDepth_m, inst.depth_m) * 1000;
-        if (!pos(W) || !pos(Hb)) errors.push('Enter the duct bank width and height.');
-        if (!pos(rhoC)) errors.push('Enter the concrete thermal resistivity.');
-        if (pos(bd) && bd - Hb / 2 <= 0) errors.push('The duct bank must be fully below ground. Increase the depth.');
-        const inside = positions.every(
-          (p) => Math.abs(p.x - bx) + Do / 2 <= W / 2 + 1e-9 && Math.abs(p.y - bd) + Do / 2 <= Hb / 2 + 1e-9,
-        );
-        if (!inside) errors.push('The ducts do not fit inside the duct bank. Enlarge the bank or reduce the spacing.');
-        if (Math.max(W, Hb) / Math.min(W, Hb) >= 3)
-          warnings.push('The duct bank equivalent-radius formula is given for a side ratio below 3.');
-        const gT = groupT4PerCable(rhoC, Do, positions, formation, touching, depth);
-        const rb = ductBankRadius(W, Hb);
-        if (bd / rb <= 1) errors.push('The duct bank is too shallow for its size.');
-        bankUnit = ductBankCorrection(1, inst.soilRho, rhoC, bd, rb);
-        bankCorrection = 3 * bankUnit;
-        couplingRho = rhoC;
-        perCable = gT.T4.map((t) => T4pp + t + (bankCorrection as number));
-        method = `Duct bank — ${gT.method}, with ρ of concrete, plus N/2π·(ρe − ρc)·ln(u + √(u² − 1)), u = LG/rb, rb = ${rb.toFixed(0)} mm`;
-        hottest = gT.hottest;
-      }
-      ext = {
-        kind: 'ducts',
-        perCable,
-        T4fixed: Math.max(...perCable),
-        T4pp,
-        bankCorrection,
-        bankUnit,
-        couplingRho,
-        method,
-        hottest,
-        U: pick(inst.duct.U, duct.U),
-        V: pick(inst.duct.V, duct.V),
-        Y: pick(inst.duct.Y, duct.Y),
-      };
+      T4pp = ductWallT4(pick(inst.duct.rho, duct.rho), Do, Dd);
     }
+    const D = ducted ? Do : De;
+
+    // Zone of different resistivity around the cables: duct bank, or backfill (IEC 60287-2-1 2.2.7.3)
+    const zone =
+      inst.type === 'ductbank'
+        ? {
+            name: 'duct bank',
+            x: pick(inst.bank.centreX_m, 0) * 1000,
+            y: pick(inst.bank.centreDepth_m, inst.depth_m) * 1000,
+            w: inst.bank.width_m * 1000,
+            h: inst.bank.height_m * 1000,
+            rho: inst.bank.concreteRho,
+            strict: true,
+          }
+        : inst.backfill && (inst.type === 'direct' || inst.type === 'ducts')
+          ? {
+              name: inst.backfill.name,
+              x: inst.backfill.centreX_m * 1000,
+              y: inst.backfill.centreDepth_m * 1000,
+              w: inst.backfill.width_m * 1000,
+              h: inst.backfill.height_m * 1000,
+              rho: inst.backfill.rho,
+              strict: false,
+            }
+          : null;
+
+    let perCable: number[];
+    let bankCorrection: number | undefined;
+    let bankUnit = 0;
+    let couplingRho = inst.soilRho;
+    let method: string;
+    let hottest: number;
+    if (zone) {
+      if (!pos(zone.w) || !pos(zone.h)) errors.push(`Enter the ${zone.name} width and height.`);
+      if (!pos(zone.rho)) errors.push(`Enter the ${zone.name} thermal resistivity.`);
+      if (pos(zone.y) && zone.y - zone.h / 2 <= 0) errors.push(`The ${zone.name} must be fully below ground.`);
+      const inside = positions.every(
+        (p) => Math.abs(p.x - zone.x) + D / 2 <= zone.w / 2 + 1e-9 && Math.abs(p.y - zone.y) + D / 2 <= zone.h / 2 + 1e-9,
+      );
+      if (!inside) {
+        if (zone.strict) errors.push('The ducts do not fit inside the duct bank. Enlarge the bank or reduce the spacing.');
+        else warnings.push(`Some cables are not fully inside the ${zone.name}; the IEC backfill method assumes they are.`);
+      }
+      if (Math.max(zone.w, zone.h) / Math.min(zone.w, zone.h) >= 3)
+        warnings.push(`The equivalent-radius formula for the ${zone.name} is given for a side ratio below 3.`);
+      const gT = groupT4PerCable(zone.rho, D, positions, formation, touching, depth);
+      const rb = ductBankRadius(zone.w, zone.h);
+      if (zone.y / rb <= 1) errors.push(`The ${zone.name} is too shallow for its size.`);
+      bankUnit = ductBankCorrection(1, inst.soilRho, zone.rho, zone.y, rb);
+      bankCorrection = 3 * bankUnit;
+      couplingRho = zone.rho;
+      perCable = gT.T4.map((t) => T4pp + t + (bankCorrection as number));
+      method = `${zone.strict ? 'Duct bank' : `Backfill (${zone.name})`} — ${gT.method}, with ρ = ${zone.rho} K·m/W, plus N/2π·(ρe − ρc)·ln(u + √(u² − 1)), u = LG/rb, rb = ${rb.toFixed(0)} mm`;
+      hottest = gT.hottest;
+    } else {
+      const gT = groupT4PerCable(inst.soilRho, D, positions, formation, touching, depth);
+      perCable = gT.T4.map((t) => T4pp + t);
+      method = ducted ? `Ducts in soil — ${gT.method}` : gT.method;
+      hottest = gT.hottest;
+    }
+    ext = {
+      kind: ducted ? 'ducts' : 'direct',
+      perCable,
+      T4fixed: Math.max(...perCable),
+      T4pp: ducted ? T4pp : undefined,
+      bankCorrection,
+      bankUnit,
+      couplingRho,
+      method,
+      hottest,
+      U: pick(inst.duct.U, duct.U),
+      V: pick(inst.duct.V, duct.V),
+      Y: pick(inst.duct.Y, duct.Y),
+    };
   }
 
   // --- Soil drying ---------------------------------------------------------------------------
@@ -640,7 +666,7 @@ export function hasOtherCircuits(inst: InstallationSpec): boolean {
 
 function circuitInstallation(inst: InstallationSpec, c: CircuitSpec | null): InstallationSpec {
   const bank = { ...inst.bank, centreDepth_m: pick(inst.bank.centreDepth_m, inst.depth_m) };
-  if (!c) return { ...inst, bank, soilModel: 'moist', circuitX_m: 0, circuits: [] };
+  if (!c) return { ...inst, bank, soilModel: 'moist', circuitX_m: inst.mainX_m ?? 0, circuits: [] };
   return {
     ...inst,
     bank,
@@ -675,19 +701,39 @@ interface SystemSolution {
   iterations: number;
 }
 
-function couplingRises(circs: SysCircuit[], W: number[]): number[][] {
+function couplingRises(circs: SysCircuit[], W: number[], F?: number[][]): number[][] {
   return circs.map((c, ci) =>
-    c.m.positions.map((p) => {
+    c.m.positions.map((p, pi) => {
       let sum = 0;
       circs.forEach((o, oi) => {
         if (oi === ci) return;
-        o.m.positions.forEach((q) => {
-          sum += W[oi] * (mutualHeatingFactor(c.m.ext.couplingRho, p, q) + c.m.ext.bankUnit);
+        o.m.positions.forEach((q, qi) => {
+          sum += W[oi] * (F ? F[ci * 3 + pi][oi * 3 + qi] : mutualHeatingFactor(c.m.ext.couplingRho, p, q) + c.m.ext.bankUnit);
         });
       });
       return sum;
     }),
   );
+}
+
+/** Replaces the external thermal resistances of each circuit with those of a numerical model. */
+function applyNumeric(models: Model[], F: number[][]) {
+  models.forEach((m, ci) => {
+    if (m.ext.kind === 'air') return;
+    const o = ci * 3;
+    const per = [0, 1, 2].map((p) => (m.ext.T4pp ?? 0) + F[o + p][o] + F[o + p][o + 1] + F[o + p][o + 2]);
+    let hottest = 0;
+    per.forEach((v, i) => {
+      if (v > per[hottest]) hottest = i;
+    });
+    m.ext.perCable = per;
+    m.ext.T4fixed = per[hottest];
+    m.ext.hottest = hottest;
+    m.ext.bankUnit = 0;
+    m.ext.bankCorrection = undefined;
+    m.ext.method =
+      'Numerical 2D model (finite volume on a non-uniform grid); the duct air gap and wall, if any, follow IEC 60287-2-1.';
+  });
 }
 
 /**
@@ -699,6 +745,7 @@ function solveSystem(
   cable: CableSpec,
   inst: InstallationSpec,
   mainCurrent?: number,
+  F?: number[][],
 ): SystemSolution {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -742,6 +789,10 @@ function solveSystem(
     }
   if (errors.length || circs[0].m.errors.length)
     return { errors: [...circs[0].m.errors, ...errors], warnings, circuits: circs, B: circs.map(() => ZERO3), iterations: 0 };
+  if (F) {
+    if (F.length !== circs.length * 3) return { errors: ['The numerical model does not match the circuits.'], warnings, circuits: circs, B: circs.map(() => ZERO3), iterations: 0 };
+    applyNumeric(circs.map((c) => c.m), F);
+  }
 
   // Start: rated circuits at their stand-alone rating.
   for (const c of circs) {
@@ -756,7 +807,7 @@ function solveSystem(
   let it = 0;
   for (it = 1; it <= 2000; it++) {
     const W = circs.map((c) => circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta).W);
-    B = couplingRises(circs, W);
+    B = couplingRises(circs, W, F);
     let change = 0;
     const newI = circs.map((c) => c.I);
     const rated = circs.map((c, i) => ({ c, i })).filter(({ c }) => c.load === 'rated');
@@ -792,7 +843,7 @@ function solveSystem(
     if (change < 1e-11) break;
   }
   const W = circs.map((c) => circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta).W);
-  B = couplingRises(circs, W);
+  B = couplingRises(circs, W, F);
   return { errors, warnings, circuits: circs, B, iterations: it };
 }
 
@@ -896,7 +947,16 @@ function makeField(m: Model, groups: { positions: Point[]; W: number; r: number 
   if (inst.type === 'air') return undefined;
   const sources: FieldSource[] = groups.flatMap((g) => g.positions.map((p) => ({ x: p.x, y: p.y, W: g.W, r: g.r })));
   const field: FieldModel = { thetaA: m.thetaA, rhoSoil: inst.soilRho, sources };
-  if (inst.type === 'ductbank')
+  if (inst.backfill && (inst.type === 'direct' || inst.type === 'ducts'))
+    field.bank = {
+      x: inst.backfill.centreX_m * 1000,
+      y: inst.backfill.centreDepth_m * 1000,
+      w: inst.backfill.width_m * 1000,
+      h: inst.backfill.height_m * 1000,
+      rhoC: inst.backfill.rho,
+      unit: m.ext.bankUnit,
+    };
+  else if (inst.type === 'ductbank')
     field.bank = {
       x: pick(inst.bank.centreX_m, 0) * 1000,
       y: pick(inst.bank.centreDepth_m, inst.depth_m) * 1000,
@@ -915,8 +975,8 @@ function caseLabel(inst: InstallationSpec): string {
   return 'Moist soil (IEC 60287-1-1 1.4.1.1)';
 }
 
-function calculateSystemRating(cable: CableSpec, inst: InstallationSpec): RatingResult {
-  const sol = solveSystem(cable, inst);
+function calculateSystemRating(cable: CableSpec, inst: InstallationSpec, opts: RatingOptions): RatingResult {
+  const sol = solveSystem(cable, inst, undefined, opts.numericF);
   const main = sol.circuits[0];
   const m = main.m;
   const notes = [...m.notes];
@@ -928,7 +988,9 @@ function calculateSystemRating(cable: CableSpec, inst: InstallationSpec): Rating
       'Soil drying-out is only defined for a single circuit (IEC 60287-1-1 1.4.2), so moist soil is used with several circuits.',
     );
   notes.push(
-    'Heating between circuits by superposition, IEC 60287-2-1 2.2.3.1: each cable’s permissible rise is reduced by the rise caused by the other circuits.',
+    opts.numericF
+      ? 'Heating between circuits from the numerical model: each cable’s permissible rise is reduced by the rise caused by the other circuits.'
+      : 'Heating between circuits by superposition, IEC 60287-2-1 2.2.3.1: each cable’s permissible rise is reduced by the rise caused by the other circuits.',
   );
   notes.push(
     inst.ratingMode === 'equal-current'
@@ -959,18 +1021,41 @@ function calculateSystemRating(cable: CableSpec, inst: InstallationSpec): Rating
   });
   const result = assemble(m, chosen, conductorTemp, label, [{ label, I: chosen.I }], warnings, notes);
   result.system = { mode: inst.ratingMode, circuits };
-  result.field = makeField(
-    m,
-    circuits.map((c) => ({ positions: c.positions, W: c.W, r: (c.ductD ?? c.De) / 2 })),
-  );
+  result.field = opts.numericF
+    ? undefined
+    : makeField(
+        m,
+        circuits.map((c) => ({ positions: c.positions, W: c.W, r: (c.ductD ?? c.De) / 2 })),
+      );
   return result;
 }
 
 /** Permissible continuous current of the main circuit (100 % load factor). */
-export function calculateRating(cable: CableSpec, inst: InstallationSpec): RatingResult {
-  if (hasOtherCircuits(inst)) return calculateSystemRating(cable, inst);
+export function calculateRating(cable: CableSpec, inst: InstallationSpec, opts: RatingOptions = {}): RatingResult {
+  if (inst.type === 'trench') {
+    const t = trenchToIec(inst);
+    const r = calculateRating(cable, t.iec, opts);
+    r.notes = [...t.notes, ...r.notes];
+    r.warnings = [...t.warnings, ...r.warnings];
+    const label = opts.numericF
+      ? 'Trench, numerical ground model'
+      : t.iec.backfill
+        ? 'Trench, IEC backfill method (1.4.1.1)'
+        : 'Trench, IEC uniform ground (1.4.1.1)';
+    const extra = r.system ? `, ${r.system.circuits.length} circuits` : '';
+    if (r.ok) {
+      r.governingCase = label + extra;
+      r.cases = r.cases.map((c, i) => (i === 0 ? { ...c, label: label + extra } : c));
+    }
+    return r;
+  }
+  if (hasOtherCircuits(inst)) return calculateSystemRating(cable, inst, opts);
 
-  const mm = buildModel(cable, { ...inst, circuitX_m: 0, circuits: [] });
+  const mm = buildModel(cable, { ...inst, circuitX_m: inst.mainX_m ?? 0, circuits: [] });
+  if (opts.numericF && mm.errors.length === 0) {
+    if (opts.numericF.length !== 3) return failResult(mm, ['The numerical model does not match the circuit.'], [], []);
+    applyNumeric([mm], opts.numericF);
+  }
   const notes = [...mm.notes];
   const warnings = [...mm.warnings];
   if (inst.type === 'air' && inst.circuits?.length)
@@ -1016,7 +1101,7 @@ export function calculateRating(cable: CableSpec, inst: InstallationSpec): Ratin
     }
   }
   const result = assemble(mm, chosen, conductorTemp, governingCase, cases, warnings, notes);
-  result.field = makeField(mm, [{ positions: mm.positions, W: result.losses.W, r: mm.objectD / 2 }]);
+  result.field = opts.numericF ? undefined : makeField(mm, [{ positions: mm.positions, W: result.losses.W, r: mm.objectD / 2 }]);
   return result;
 }
 
@@ -1028,7 +1113,9 @@ export function calculateTemperature(
   cable: CableSpec,
   inst: InstallationSpec,
   I: number,
+  opts: RatingOptions = {},
 ): TemperatureResult {
+  if (inst.type === 'trench') return calculateTemperature(cable, trenchToIec(inst).iec, I, opts);
   const empty = (errors: string[]): TemperatureResult => ({
     ok: false,
     errors,
@@ -1048,20 +1135,21 @@ export function calculateTemperature(
   let soil: SoilCase = inst.type === 'direct' && inst.soilModel === 'two-zone' ? 'two-zone' : 'moist';
   if (hasOtherCircuits(inst)) {
     // Others at their rating with the main circuit rated, then the main circuit at I.
-    const rated = solveSystem(cable, inst);
+    const rated = solveSystem(cable, inst, undefined, opts.numericF);
     if (rated.errors.length) return empty(rated.errors);
     const fixedInst: InstallationSpec = {
       ...inst,
       circuits: inst.circuits.map((c, i) => ({ ...c, load: 'fixed', current_A: rated.circuits[i + 1].I })),
     };
-    const sol = solveSystem(cable, fixedInst, I);
+    const sol = solveSystem(cable, fixedInst, I, opts.numericF);
     if (sol.errors.length) return empty(sol.errors);
     m = sol.circuits[0].m;
     B = sol.B[0];
     soil = 'moist';
   } else {
-    m = buildModel(cable, { ...inst, circuitX_m: 0, circuits: [] });
+    m = buildModel(cable, { ...inst, circuitX_m: inst.mainX_m ?? 0, circuits: [] });
     if (m.errors.length) return empty(m.errors);
+    if (opts.numericF) applyNumeric([m], opts.numericF);
   }
   const t = temperatureAt(m, I, soil, B);
   const ok = Number.isFinite(t.thetaC) && t.thetaC < 1e4;

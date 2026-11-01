@@ -12,14 +12,24 @@ import {
   type RatingResult,
 } from '../engine';
 import { fmt } from './format';
-import { gridMax, heatLayer, isoLevels, niceStep, sampleField, type HeatLayer, type Region } from './heatmap';
+import {
+  analyticField,
+  gridMax,
+  heatLayer,
+  isoLevels,
+  niceStep,
+  sampleField,
+  type FieldSourceLike,
+  type HeatLayer,
+  type Region,
+} from './heatmap';
 import { heatAlpha, makeRamp, rgbHex, type Palette } from './theme';
 
 const FONT = "'IBM Plex Sans', 'DejaVu Sans', system-ui, sans-serif";
 const SVGNS = 'http://www.w3.org/2000/svg';
 const cleanId = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '');
 
-function metalOf(pal: Palette, key: MetalKey): [string, string, string] {
+export function metalOf(pal: Palette, key: MetalKey): [string, string, string] {
   if (key === 'Cu' || key === 'bronze') return pal.cu;
   if (key === 'Al') return pal.al;
   if (key === 'Pb') return pal.pb;
@@ -448,7 +458,7 @@ export function buildScene(cable: CableSpec, inst: InstallationSpec, result: Rat
 
   let heat: Scene['heat'] = null;
   if (result.field) {
-    const probe = sampleField(result.field, { ...detail, y0: Math.max(0, detail.y0) }, 120, 80);
+    const probe = sampleField(analyticField(result.field).fn, { ...detail, y0: Math.max(0, detail.y0) }, 120, 80);
     const fmax = gridMax(probe);
     const tMin = result.field.thetaA;
     if (Number.isFinite(fmax) && fmax > tMin + 0.5) {
@@ -474,9 +484,10 @@ export function sceneHeat(scene: Scene, result: RatingResult, pal: Palette) {
   if (!scene.heat || !result.field) return { overview: null, detail: null };
   const { tMin, tMax, levels } = scene.heat;
   const ov = scene.overview;
+  const f: FieldSourceLike = analyticField(result.field);
   return {
-    overview: heatLayer(result.field, { ...ov, y0: 0 }, 240, tMin, tMax, levels, pal.heat),
-    detail: heatLayer(result.field, scene.detail, 280, tMin, tMax, levels, pal.heat),
+    overview: heatLayer(f, { ...ov, y0: 0 }, 240, tMin, tMax, levels, pal.heat),
+    detail: heatLayer(f, scene.detail, 280, tMin, tMax, levels, pal.heat),
   };
 }
 
@@ -492,7 +503,7 @@ const GRAINS = [
   [0.83, 0.43, 0.03],
 ];
 
-function GroundDefs({ id, pal, tile }: { id: (s: string) => string; pal: Palette; tile: number }) {
+export function GroundDefs({ id, pal, tile }: { id: (s: string) => string; pal: Palette; tile: number }) {
   return (
     <>
       <pattern id={id('grain')} width={tile} height={tile} patternUnits="userSpaceOnUse">
@@ -520,7 +531,7 @@ function GroundDefs({ id, pal, tile }: { id: (s: string) => string; pal: Palette
   );
 }
 
-function CableGlyph({
+export function CableGlyph({
   x,
   y,
   geo,
@@ -604,25 +615,35 @@ function BankShape({ scene, pal, id, sw, fill }: { scene: Scene; pal: Palette; i
   );
 }
 
-function HeatOverlay({
+export function HeatOverlay({
   layer,
   pal,
   fs,
   labels,
   sw,
+  imageOpacity = 1,
 }: {
   layer: HeatLayer | null;
   pal: Palette;
   fs: number;
   labels: boolean;
   sw: number;
+  imageOpacity?: number;
 }) {
   if (!layer) return null;
   const r = layer.region;
   return (
     <g>
       {layer.href && (
-        <image href={layer.href} x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} preserveAspectRatio="none" />
+        <image
+          href={layer.href}
+          x={r.x0}
+          y={r.y0}
+          width={r.x1 - r.x0}
+          height={r.y1 - r.y0}
+          preserveAspectRatio="none"
+          opacity={imageOpacity}
+        />
       )}
       {layer.isotherms.map((iso) => (
         <path key={iso.level} d={iso.d} fill="none" stroke={pal.isotherm} strokeWidth={sw} opacity={0.55} />
@@ -983,14 +1004,22 @@ export function heatScaleColor(pal: Palette, t: number): string {
   return rgbHex([0, 1, 2].map((k) => Math.round(a * rgb[k] + (1 - a) * soil[k])) as [number, number, number]);
 }
 
-function HeatLegend({ scene, pal }: { scene: Scene; pal: Palette }) {
+export function HeatLegend({
+  scene,
+  pal,
+  title = 'Ground temperature at the rated current, °C',
+}: {
+  scene: { heat: Scene['heat'] };
+  pal: Palette;
+  title?: string;
+}) {
   if (!scene.heat) return null;
   const { tMin, tMax, levels } = scene.heat;
   const stops = Array.from({ length: 11 }, (_, i) => `${heatScaleColor(pal, i / 10)} ${i * 10}%`).join(', ');
   const ticks = [tMin, ...levels, tMax];
   return (
     <div className="heat-legend">
-      <span className="heat-legend-title">Ground temperature at the rated current, °C</span>
+      <span className="heat-legend-title">{title}</span>
       <div className="heat-bar" style={{ background: `linear-gradient(90deg, ${stops})` }} aria-hidden="true" />
       <div className="heat-ticks" aria-hidden="true">
         {ticks.map((t, i) => (

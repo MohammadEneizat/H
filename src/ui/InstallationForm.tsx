@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   AIR_CONSTANTS,
+  defaultTrench,
   DUCTS,
   JACKETS,
   type AirArrangement,
@@ -30,7 +31,8 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
   const setAir = (patch: Partial<InstallationSpec['air']>) => set({ air: { ...i.air, ...patch } });
   const num = (v: number | null) => (v === null ? NaN : v);
   const buried = i.type !== 'air';
-  const inDucts = i.type === 'ducts' || i.type === 'ductbank';
+  const trench = i.type === 'trench';
+  const inDucts = i.type === 'ducts' || i.type === 'ductbank' || (trench && !!i.trench?.ducted);
   const duct = DUCTS[i.duct.material];
   const airSpaced = i.type === 'air' && AIR_CONSTANTS[i.air.arrangement].spacingFactor === null;
   const flat = i.type === 'air' ? AIR_CONSTANTS[i.air.arrangement].formation === 'flat' : i.formation === 'flat';
@@ -47,9 +49,16 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             { value: 'ducts', label: 'Ducts' },
             { value: 'ductbank', label: 'Duct bank' },
             { value: 'air', label: 'Free air' },
+            { value: 'trench', label: 'Trench layout' },
           ]}
-          onChange={(type) => set({ type })}
+          onChange={(type) => set(type === 'trench' && !i.trench ? { type, trench: defaultTrench(i) } : { type })}
         />
+        {trench && (
+          <p className="field-hint field-wide">
+            Build the trench in the editor next to the results: ground layers, fill zones, cover tiles and cable
+            positions. The rating is shown by the IEC method and by a numerical ground model.
+          </p>
+        )}
         <NumField
           id="amb"
           label={buried ? 'Ground temperature at depth' : 'Air temperature'}
@@ -148,7 +157,7 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
       </Section>
 
       {buried && (
-        <Section title={i.type === 'ductbank' ? 'Duct bank and soil' : 'Soil'}>
+        <Section title={i.type === 'ductbank' ? 'Duct bank and soil' : trench ? 'Main circuit position' : 'Soil'}>
           <NumField
             id="depth"
             label={i.type === 'ductbank' ? 'Depth to centre of bank' : 'Depth to centre of circuit'}
@@ -156,13 +165,23 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             value={i.depth_m}
             onChange={(v) => set({ depth_m: num(v) })}
           />
-          <NumField
-            id="soil"
-            label="Soil thermal resistivity"
-            unit="K·m/W"
-            value={i.soilRho}
-            onChange={(v) => set({ soilRho: num(v) })}
-          />
+          {trench ? (
+            <NumField
+              id="main-x"
+              label="Horizontal position"
+              unit="m"
+              value={i.mainX_m ?? 0}
+              onChange={(v) => set({ mainX_m: v ?? 0 })}
+            />
+          ) : (
+            <NumField
+              id="soil"
+              label="Soil thermal resistivity"
+              unit="K·m/W"
+              value={i.soilRho}
+              onChange={(v) => set({ soilRho: num(v) })}
+            />
+          )}
           {i.type === 'ductbank' && (
             <>
               <NumField

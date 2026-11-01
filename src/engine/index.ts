@@ -1,7 +1,10 @@
 export * from './types';
 export * from './materials';
 export { deriveGeometry } from './geometry';
-export { calculateRating, calculateTemperature, hasOtherCircuits, sweepRating, type SweepParam } from './solver';
+export { calculateRating, calculateTemperature, hasOtherCircuits, sweepRating, type RatingOptions, type SweepParam } from './solver';
+export * from './trench';
 export * as losses from './losses';
 export * as thermal from './thermal';
 export { fieldTemperature, type FieldModel, type FieldSource } from './field';
+export { solveNumeric, numericField, exactInfluence, type NumericResult, type NumObject, type NumInput } from './numeric';
+export { numericRating, bodiesOf, type NumericRating } from './numericRating';

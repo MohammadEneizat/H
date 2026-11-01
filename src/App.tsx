@@ -1,5 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { calculateRating, type CableSpec, type CircuitSpec, type InstallationSpec } from './engine';
+import {
+  calculateRating,
+  defaultTrench,
+  type CableSpec,
+  type CircuitSpec,
+  type InstallationSpec,
+  type RouteSpec,
+} from './engine';
+import { RouteCard } from './ui/RouteCard';
+import { RouteForm } from './ui/RouteForm';
 import { DEFAULT_INSTALLATION, EXAMPLE_CABLES } from './engine/presets';
 import { CableForm } from './ui/CableForm';
 import { CircuitsForm } from './ui/CircuitsForm';
@@ -8,7 +17,7 @@ import { Results } from './ui/Results';
 import { amps } from './ui/format';
 import { safeName, saveFile, saveMessage } from './ui/save';
 
-type Tab = 'cable' | 'installation' | 'circuits' | 'library';
+type Tab = 'cable' | 'installation' | 'circuits' | 'route' | 'library';
 
 const STORE_KEY = 'ampacity-workbench.v1';
 const framed = (() => {
@@ -63,6 +72,16 @@ function normalizeInst(i: Partial<InstallationSpec> | undefined): InstallationSp
     air: { ...base.air, ...(i.air ?? {}) },
     ratingMode: i.ratingMode === 'equal-current' ? 'equal-current' : 'own-limit',
     circuits: Array.isArray(i.circuits) ? i.circuits.map(normalizeCircuit) : [],
+    trench:
+      i.trench && typeof i.trench === 'object'
+        ? {
+            ...defaultTrench(base),
+            ...i.trench,
+            layers: Array.isArray(i.trench.layers) && i.trench.layers.length ? i.trench.layers : defaultTrench(base).layers,
+            zones: Array.isArray(i.trench.zones) ? i.trench.zones : [],
+            slabs: Array.isArray(i.trench.slabs) ? i.trench.slabs : [],
+          }
+        : undefined,
   };
 }
 
@@ -70,6 +89,21 @@ interface Stored {
   cable: CableSpec;
   inst: InstallationSpec;
   library: CableSpec[];
+  route: RouteSpec;
+}
+
+function normalizeRoute(r: Partial<RouteSpec> | undefined): RouteSpec {
+  if (!r || !Array.isArray(r.sections)) return { sections: [], activeId: null };
+  const sections = r.sections
+    .filter((x) => x && typeof x === 'object')
+    .map((x, i) => ({
+      id: typeof x.id === 'string' ? x.id : `s${i}-${Math.random().toString(36).slice(2, 8)}`,
+      name: typeof x.name === 'string' ? x.name : `Section ${i + 1}`,
+      length_m: typeof x.length_m === 'number' ? x.length_m : 100,
+      inst: normalizeInst(x.inst),
+    }));
+  const activeId = sections.some((x) => x.id === r.activeId) ? (r.activeId as string) : null;
+  return { sections, activeId };
 }
 
 function loadStored(): Stored {
@@ -81,12 +115,13 @@ function loadStored(): Stored {
         cable: normalizeCable(s.cable),
         inst: normalizeInst(s.inst),
         library: Array.isArray(s.library) ? s.library.map(normalizeCable) : [],
+        route: normalizeRoute(s.route),
       };
     }
   } catch {
     /* storage unavailable */
   }
-  return { cable: clone(EXAMPLE_CABLES[0]), inst: clone(DEFAULT_INSTALLATION), library: [] };
+  return { cable: clone(EXAMPLE_CABLES[0]), inst: clone(DEFAULT_INSTALLATION), library: [], route: { sections: [], activeId: null } };
 }
 
 export function App() {
@@ -94,6 +129,7 @@ export function App() {
   const [cable, setCable] = useState<CableSpec>(initial.cable);
   const [inst, setInst] = useState<InstallationSpec>(initial.inst);
   const [library, setLibrary] = useState<CableSpec[]>(initial.library);
+  const [route, setRoute] = useState<RouteSpec>(initial.route);
   const [tab, setTab] = useState<Tab>('cable');
   const [message, setMessage] = useState<string>('');
   const [paste, setPaste] = useState('');
@@ -101,11 +137,38 @@ export function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ cable, inst, library }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ cable, inst, library, route }));
     } catch {
       /* storage unavailable */
     }
-  }, [cable, inst, library]);
+  }, [cable, inst, library, route]);
+
+  // Edits to the installation go to the route section being edited.
+  useEffect(() => {
+    if (!route.activeId) return;
+    setRoute((r) => {
+      const sec = r.sections.find((x) => x.id === r.activeId);
+      if (!sec || sec.inst === inst) return r;
+      return { ...r, sections: r.sections.map((x) => (x.id === r.activeId ? { ...x, inst } : x)) };
+    });
+  }, [inst, route.activeId]);
+
+  const editSection = (id: string | null) => {
+    if (id) {
+      const sec = route.sections.find((x) => x.id === id);
+      if (sec) setInst(sec.inst);
+    }
+    setRoute((r) => ({ ...r, activeId: id }));
+  };
+
+  const routeRatings = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const sec of route.sections) {
+      const r = calculateRating(cable, sec.inst);
+      out[sec.id] = r.ok ? r.I : NaN;
+    }
+    return out;
+  }, [cable, route.sections]);
 
   useEffect(() => {
     if (!message) return;
@@ -114,13 +177,15 @@ export function App() {
   }, [message]);
 
   const result = useMemo(() => calculateRating(cable, inst), [cable, inst]);
-  const projectJson = () => JSON.stringify({ format: 'ampacity-workbench', version: 1, cable, inst }, null, 2);
+  const projectJson = () =>
+    JSON.stringify({ format: 'ampacity-workbench', version: 2, cable, inst, route }, null, 2);
 
   const importJson = (text: string) => {
     try {
       const data = JSON.parse(text);
       if (data.cable) setCable(normalizeCable(data.cable));
       if (data.inst) setInst(normalizeInst(data.inst));
+      setRoute(normalizeRoute(data.route));
       if (Array.isArray(data.library)) setLibrary(data.library.map(normalizeCable));
       if (!data.cable && !data.inst && !Array.isArray(data.library)) throw new Error('no project');
       setMessage('Project imported');
@@ -187,6 +252,7 @@ export function App() {
                 ['cable', 'Cable'],
                 ['installation', 'Installation'],
                 ['circuits', inst.circuits.length ? `Circuits (${inst.circuits.length + 1})` : 'Circuits'],
+                ['route', route.sections.length ? `Route (${route.sections.length})` : 'Route'],
                 ['library', 'Library'],
               ] as [Tab, string][]
             ).map(([k, label]) => (
@@ -208,6 +274,9 @@ export function App() {
             {tab === 'cable' && <CableForm cable={cable} onChange={setCable} />}
             {tab === 'installation' && <InstallationForm inst={inst} cable={cable} onChange={setInst} />}
             {tab === 'circuits' && <CircuitsForm inst={inst} cable={cable} library={library} onChange={setInst} />}
+            {tab === 'route' && (
+              <RouteForm route={route} inst={inst} ratings={routeRatings} onRoute={setRoute} onEdit={editSection} />
+            )}
             {tab === 'library' && (
               <div className="form library">
                 <section className="form-section">
@@ -343,7 +412,14 @@ export function App() {
         </aside>
 
         <main className="output" id="results" aria-label="Results">
-          <Results cable={cable} inst={inst} result={result} />
+          <Results
+            cable={cable}
+            inst={inst}
+            result={result}
+            onInstChange={setInst}
+            route={route}
+            routeCard={<RouteCard route={route} ratings={routeRatings} onEdit={editSection} />}
+          />
           <footer className="foot">
             Steady-state rating to IEC 60287-1-1 and IEC 60287-2-1 for circuits of three single-core cables without
             armour, with heating between circuits by superposition. Check the result against your copy of the standard and the manufacturer’s data before relying on

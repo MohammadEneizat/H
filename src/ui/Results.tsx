@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { calculateTemperature, type CableSpec, type InstallationSpec, type RatingResult } from '../engine';
+import { calculateTemperature, type CableSpec, type InstallationSpec, type RatingResult, type RouteSpec } from '../engine';
 import { buildPdfReport } from '../report/pdf';
 import { calcSections, summaryChips, type Row } from '../report/sections';
 import { CableSection, InstallationView } from './Drawing';
@@ -8,11 +8,16 @@ import { amps, fmt } from './format';
 import { SweepChart } from './SweepChart';
 import { safeName, saveFile, saveMessage } from './save';
 import { PALETTES, useThemeMode } from './theme';
+import { TrenchEditor } from './TrenchEditor';
+import { useNumeric } from './useNumeric';
 
 interface Props {
   cable: CableSpec;
   inst: InstallationSpec;
   result: RatingResult;
+  onInstChange: (i: InstallationSpec) => void;
+  route: RouteSpec;
+  routeCard?: React.ReactNode;
 }
 
 
@@ -59,13 +64,21 @@ function CalcTableInner({ title, rows }: { title: string; rows: Row[] }) {
   );
 }
 
-export function Results({ cable, inst, result: r }: Props) {
+export function Results({ cable, inst, result: r, onInstChange, route, routeCard }: Props) {
   const pal = PALETTES[useThemeMode()];
+  const num = useNumeric(cable, inst, r);
+  const trench = inst.type === 'trench';
+  const numOk = trench && num.fresh && !!num.data?.result.ok;
+  const numTempAtIec = useMemo(
+    () =>
+      numOk && r.ok ? calculateTemperature(cable, inst, r.I, { numericF: num.data!.numeric.F }) : null,
+    [numOk, num.data, cable, inst, r],
+  );
   const [report, setReport] = useState<{ busy: boolean; msg: string }>({ busy: false, msg: '' });
   const makeReport = async () => {
     setReport({ busy: true, msg: 'Preparing the PDF…' });
     try {
-      const blob = await buildPdfReport({ cable, inst, result: r });
+      const blob = await buildPdfReport({ cable, inst, result: r, numeric: numOk ? num.data : null, route });
       const outcome = await saveFile(`${safeName(cable.name)}_IEC60287_rating.pdf`, blob);
       setReport({ busy: false, msg: saveMessage(outcome, 'PDF report') });
     } catch (e) {
@@ -92,6 +105,7 @@ export function Results({ cable, inst, result: r }: Props) {
               </li>
             ))}
           </ul>
+          {trench && <p className="summary-sub">Fix the inputs listed above; the trench editor appears once the rating can be calculated.</p>}
         </section>
       </div>
     );
@@ -105,6 +119,11 @@ export function Results({ cable, inst, result: r }: Props) {
     <div className="results">
       <section className="card summary" aria-live="polite">
         <div className="summary-main">
+          {route.activeId && (
+            <p className="editing-banner">
+              Editing route section: <strong>{route.sections.find((x) => x.id === route.activeId)?.name}</strong>
+            </p>
+          )}
           <p className="eyebrow">{r.system ? 'Main circuit C1 · permissible current per phase' : 'Permissible current per phase'}</p>
           <p className="hero-figure">
             {amps(r.I)}
@@ -130,7 +149,43 @@ export function Results({ cable, inst, result: r }: Props) {
           </div>
         </div>
         <div className="summary-side">
-          {r.cases.length > 1 && (
+          {trench && (
+            <table className="cases">
+              <caption>Rating by method</caption>
+              <tbody>
+                <tr className="is-governing">
+                  <th scope="row">IEC 60287 (backfill method)</th>
+                  <td>{amps(r.I)} A</td>
+                </tr>
+                <tr>
+                  <th scope="row">Numerical 2D ground model</th>
+                  <td>
+                    {numOk
+                      ? `${amps(num.data!.result.I)} A`
+                      : num.status === 'error'
+                        ? 'failed'
+                        : 'updating…'}
+                  </td>
+                </tr>
+                {numOk && (
+                  <tr>
+                    <th scope="row">Difference</th>
+                    <td>
+                      {num.data!.result.I >= r.I ? '+' : '−'}
+                      {fmt(Math.abs((num.data!.result.I / r.I - 1) * 100), 1)} %
+                    </td>
+                  </tr>
+                )}
+                {numTempAtIec?.ok && (
+                  <tr>
+                    <th scope="row">Conductor at the IEC rating, numerical</th>
+                    <td>{fmt(numTempAtIec.conductor, 1)} °C</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
+          {r.cases.length > 1 && !trench && (
             <table className="cases">
               <caption>Soil cases</caption>
               <tbody>
@@ -248,15 +303,21 @@ export function Results({ cable, inst, result: r }: Props) {
         </section>
       )}
 
-      <section className="card drawings" aria-label="Drawings">
+      {routeCard}
+
+      {trench && <TrenchEditor cable={cable} inst={inst} iec={r} num={num} pal={pal} onChange={onInstChange} />}
+
+      <section className={`card drawings${trench ? ' drawings-cable-only' : ''}`} aria-label="Drawings">
         <div className="drawing-cell">
           <h2 className="drawing-title">Cable</h2>
           <CableSection cable={cable} result={r} pal={pal} />
         </div>
-        <div className="drawing-cell drawing-wide">
-          <h2 className="drawing-title">Installation</h2>
-          <InstallationView cable={cable} inst={inst} result={r} pal={pal} />
-        </div>
+        {!trench && (
+          <div className="drawing-cell drawing-wide">
+            <h2 className="drawing-title">Installation</h2>
+            <InstallationView cable={cable} inst={inst} result={r} pal={pal} />
+          </div>
+        )}
       </section>
 
       <SweepChart cable={cable} inst={inst} result={r} />
@@ -272,6 +333,20 @@ export function Results({ cable, inst, result: r }: Props) {
           </div>
         </header>
         <div className="calc-grid">
+          {numOk && (
+            <CalcTable
+              title="Numerical 2D ground model"
+              rows={[
+                ['Grid cells', '', num.data!.numeric.nx * num.data!.numeric.ny + '', '', 'TR 62095'],
+                ['Solver iterations (all cables)', '', num.data!.numeric.iterations + '', '', ''],
+                ['External thermal resistance, hottest cable', 'T4', fmt(num.data!.result.thermal.t4.T4, 4), 'K·m/W', ''],
+                ['External thermal resistance, IEC', 'T4', fmt(r.thermal.t4.T4, 4), 'K·m/W', '2-1 2.2'],
+                ['Rating, numerical', 'I', amps(num.data!.result.I), 'A', ''],
+                ['Rating, IEC', 'I', amps(r.I), 'A', '1-1 1.4'],
+              ]}
+              note="Finite-volume model of the ground with every layer, fill zone and tile; ground surface and far boundaries at ambient. Cable losses, internal thermal resistances and the duct air gap follow IEC 60287."
+            />
+          )}
           {sections.map((sec) =>
             sec.title.startsWith('Screen') ? (
               <section className="calc-block" key={sec.title}>

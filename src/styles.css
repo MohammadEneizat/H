@@ -1012,6 +1012,224 @@ textarea {
   background: transparent;
 }
 
+/* ---------- Trench editor ---------- */
+.trench-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  margin-bottom: 12px;
+}
+.tool-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.tool-label {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  font-weight: 600;
+  margin-right: 2px;
+}
+.trench-toolbar select {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  padding: 6px 8px;
+  font-size: var(--fs-sm);
+  max-width: 100%;
+}
+.trench-toolbar .toggle {
+  width: auto;
+}
+.trench-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  gap: 16px 20px;
+}
+@media (max-width: 1180px) {
+  .trench-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.trench-canvas {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  border-radius: 4px;
+}
+.trench-canvas:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+.trench-svg {
+  width: 100%;
+  height: auto;
+  max-height: 600px;
+  display: block;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.trench-svg .drag {
+  touch-action: none;
+}
+.trench-inspector {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  border-left: 1px solid var(--line-2);
+  padding-left: 18px;
+}
+@media (max-width: 1180px) {
+  .trench-inspector {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--line-2);
+    padding-top: 12px;
+  }
+}
+.trench-inspector h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+.trench-facts {
+  margin: 4px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+.trench-facts dt {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.trench-facts dd {
+  margin: 0 0 6px;
+}
+.drawings.drawings-cable-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+.drawings-cable-only .cable-drawing {
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+}
+@media (max-width: 720px) {
+  .drawings-cable-only .cable-drawing {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Route ---------- */
+.route-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.route-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px 2px;
+}
+.route-item.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.route-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.route-chain {
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.route-rating {
+  margin-left: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.route-type {
+  align-self: end;
+  padding-bottom: 8px;
+}
+.route-headline {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  text-align: right;
+}
+.route-big {
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.route-limit {
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+.chart .route-bar {
+  fill: var(--ink-3);
+  opacity: 0.35;
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+.chart .route-bar.is-min {
+  fill: var(--accent);
+  opacity: 0.9;
+}
+.chart .route-bar.is-hover {
+  opacity: 0.6;
+}
+.chart .route-bar.is-min.is-hover {
+  opacity: 1;
+}
+.chart .route-bar.is-active {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+.chart .route-min {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.chart .route-min-label {
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 3px;
+}
+.chart .route-val {
+  font-size: 11px;
+}
+.route-table td .pill {
+  margin-left: 6px;
+}
+.editing-banner {
+  margin: 0 0 8px;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 4px 8px;
+  display: inline-block;
+}
+.tab {
+  padding-inline: 4px;
+}
+
 /* ---------- Chart ---------- */
 .chart-controls {
   display: flex;

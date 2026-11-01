@@ -73,9 +73,13 @@ const M = { top: 18, right: 24, bottom: 40, left: 56 };
 
 export function SweepChart({ cable, inst, result }: Props) {
   const available = PARAMS.filter((p) =>
-    inst.type === 'air' ? p.key === 'ambient_C' || (p.key === 'spacing_mm' && inst.air.arrangement === 'isolated') : true,
+    inst.type === 'air'
+      ? p.key === 'ambient_C' || (p.key === 'spacing_mm' && inst.air.arrangement === 'isolated')
+      : inst.type === 'trench'
+        ? p.key === 'ambient_C' || (p.key === 'spacing_mm' && !inst.touching)
+        : true,
   );
-  const [key, setKey] = useState<SweepParam>('soilRho');
+  const [key, setKey] = useState<SweepParam>(inst.type === 'trench' ? 'ambient_C' : 'soilRho');
   const [hover, setHover] = useState<number | null>(null);
   const [showTable, setShowTable] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -136,7 +140,9 @@ export function SweepChart({ cable, inst, result }: Props) {
       <header className="card-head">
         <div>
           <h2 id="sweep-title">Rating against {def.label.toLowerCase()}</h2>
-          <p className="card-sub">All other inputs held at their current values.</p>
+          <p className="card-sub">
+            All other inputs held at their current values.{inst.type === 'trench' ? ' IEC method.' : ''}
+          </p>
         </div>
         <div className="chart-controls">
           <label htmlFor="sweep-param" className="sr-only">

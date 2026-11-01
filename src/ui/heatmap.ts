@@ -1,4 +1,18 @@
 import { fieldTemperature, type FieldModel } from '../engine';
+
+/** Temperature (°C) at a point in mm; NaN where there is no ground. */
+export type FieldFn = (x: number, y: number) => number;
+
+/** A field plus the cables or ducts it surrounds (used to keep labels clear of them). */
+export interface FieldSourceLike {
+  fn: FieldFn;
+  sources: { x: number; y: number; r: number }[];
+}
+
+export const analyticField = (f: FieldModel): FieldSourceLike => ({
+  fn: (x, y) => fieldTemperature(f, x, y),
+  sources: f.sources,
+});
 import { heatAlpha, makeRamp } from './theme';
 
 /** Rectangle in mm; y is depth, positive down. */
@@ -17,13 +31,13 @@ export interface Grid {
   v: Float64Array;
 }
 
-export function sampleField(field: FieldModel, region: Region, nx: number, ny: number): Grid {
+export function sampleField(field: FieldFn, region: Region, nx: number, ny: number): Grid {
   const v = new Float64Array(nx * ny);
   const dx = (region.x1 - region.x0) / nx;
   const dy = (region.y1 - region.y0) / ny;
   for (let j = 0; j < ny; j++) {
     const y = region.y0 + (j + 0.5) * dy;
-    for (let i = 0; i < nx; i++) v[j * nx + i] = fieldTemperature(field, region.x0 + (i + 0.5) * dx, y);
+    for (let i = 0; i < nx; i++) v[j * nx + i] = field(region.x0 + (i + 0.5) * dx, y);
   }
   return { region, nx, ny, v };
 }
@@ -164,7 +178,7 @@ export interface HeatLayer {
 }
 
 export function heatLayer(
-  field: FieldModel,
+  field: FieldSourceLike,
   region: Region,
   nx: number,
   tMin: number,
@@ -173,7 +187,7 @@ export function heatLayer(
   stops: string[],
 ): HeatLayer {
   const ny = Math.max(8, Math.round((nx * (region.y1 - region.y0)) / (region.x1 - region.x0)));
-  const g = sampleField(field, region, nx, ny);
+  const g = sampleField(field.fn, region, nx, ny);
   return {
     href: heatImage(g, tMin, tMax, stops),
     region,

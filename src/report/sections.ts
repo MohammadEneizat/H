@@ -2,6 +2,7 @@
 import {
   AIR_CONSTANTS,
   DUCTS,
+  GROUND,
   INSULATIONS,
   JACKETS,
   METALS,
@@ -19,7 +20,13 @@ export interface CalcSection {
   note?: string;
 }
 
-export const typeLabel = { direct: 'Direct buried', ducts: 'In ducts', ductbank: 'Duct bank', air: 'Free air' } as const;
+export const typeLabel = {
+  direct: 'Direct buried',
+  ducts: 'In ducts',
+  ductbank: 'Duct bank',
+  air: 'Free air',
+  trench: 'Trench layout',
+} as const;
 export const bondLabel = { both: 'Both ends bonded', single: 'Single-point bonded', cross: 'Cross-bonded' } as const;
 
 export function summaryChips(inst: InstallationSpec, r: RatingResult): string[] {
@@ -32,7 +39,9 @@ export function summaryChips(inst: InstallationSpec, r: RatingResult): string[] 
     ...(r.system ? [`${r.system.circuits.length} circuits`] : []),
     inst.type === 'air'
       ? `${fmt(inst.ambient_C, 0)} °C air`
-      : `${fmt(inst.depth_m, 2)} m · ${fmt(inst.soilRho, 2)} K·m/W · ${fmt(inst.ambient_C, 0)} °C`,
+      : inst.type === 'trench'
+        ? `${fmt(inst.depth_m, 2)} m · ${inst.trench?.layers.length ?? 0} ground layers · ${fmt(inst.ambient_C, 0)} °C`
+        : `${fmt(inst.depth_m, 2)} m · ${fmt(inst.soilRho, 2)} K·m/W · ${fmt(inst.ambient_C, 0)} °C`,
   ];
 }
 
@@ -191,7 +200,7 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
   } else {
     instRows.push(['Formation', `${inst.formation === 'trefoil' ? 'Trefoil' : 'Flat'}, ${inst.touching ? 'touching' : `axial spacing ${v(inst.spacing_mm, 0, 'mm')}`}${inst.formation === 'flat' ? (inst.transposed ? ', transposed' : ', not transposed') : ''}`]);
     instRows.push([inst.type === 'ductbank' ? 'Depth to circuit centre' : 'Depth to circuit centre', v(inst.depth_m, 2, 'm')]);
-    instRows.push(['Soil thermal resistivity', v(inst.soilRho, 2, 'K·m/W')]);
+    if (inst.type !== 'trench') instRows.push(['Soil thermal resistivity', v(inst.soilRho, 2, 'K·m/W')]);
     if (inst.type === 'direct' && inst.soilModel !== 'moist')
       instRows.push([
         'Soil drying',
@@ -199,7 +208,7 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
           ? `Two-zone, θx ${v(inst.criticalTemp_C, 0, '°C')}, ρ dry ${v(inst.dryRho, 2, 'K·m/W')}`
           : `Avoid drying, θx ${v(inst.criticalTemp_C, 0, '°C')}`,
       ]);
-    if (inst.type !== 'direct') {
+    if (inst.type === 'ducts' || inst.type === 'ductbank' || (inst.type === 'trench' && inst.trench?.ducted)) {
       const d = DUCTS[inst.duct.material];
       instRows.push(['Ducts', `${d.label}, ⌀ ${v(inst.duct.innerD_mm, 0)} / ${v(inst.duct.outerD_mm, 0, 'mm')}`]);
       instRows.push(['Duct constants U, V, Y', `${inst.duct.U ?? d.U}, ${inst.duct.V ?? d.V}, ${inst.duct.Y ?? d.Y}`]);
@@ -214,6 +223,41 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
     { title: 'Cable', rows: cableRows },
     { title: 'Installation', rows: instRows },
   ];
+  const t = inst.type === 'trench' ? inst.trench : undefined;
+  if (t) {
+    out.push({
+      title: 'Trench',
+      rows: [
+        ['Trench', t.present ? `${v(t.topWidth_m, 2)} m wide at the surface, ${v(t.bottomWidth_m, 2)} m at the bottom, ${v(t.depth_m, 2)} m deep` : 'none (cables in the layered ground)'],
+        ['Surface', t.surface === 'grass' ? 'Grass' : t.surface === 'asphalt' ? 'Asphalt road' : 'Paving'],
+        ['Cables', t.ducted ? 'in ducts' : 'direct in the fill'],
+        ['Main circuit position', `x ${v(inst.mainX_m ?? 0, 2, 'm')}, depth ${v(inst.depth_m, 2, 'm')}`],
+      ],
+    });
+    let top = 0;
+    out.push({
+      title: 'Ground layers',
+      rows: t.layers.map((l, i) => {
+        const last = i === t.layers.length - 1;
+        const label = last ? `from ${v(top, 2, 'm')} down` : `${v(top, 2)}–${v(top + l.thickness_m, 2, 'm')}`;
+        top += l.thickness_m;
+        return [l.name, `${GROUND[l.material].label}, ρ ${v(l.rho, 2, 'K·m/W')}, ${label}`];
+      }),
+    });
+    if (t.present && t.zones.length)
+      out.push({
+        title: 'Trench fill',
+        rows: t.zones.map((z) => [z.name, `${GROUND[z.material].label}, ρ ${v(z.rho, 2, 'K·m/W')}, ${v(z.top_m, 2)}–${v(z.bottom_m, 2, 'm')}`]),
+      });
+    if (t.slabs.length)
+      out.push({
+        title: 'Tiles and tape',
+        rows: t.slabs.map((sl) => [
+          sl.kind === 'tile' ? 'Cover tiles' : 'Warning tape',
+          `${v(sl.width_m, 2, 'm')} wide at ${v(sl.depth_m, 2, 'm')}${sl.kind === 'tile' ? `, ${v(sl.thickness_m * 1000, 0, 'mm')} thick, ρ ${v(sl.rho, 2, 'K·m/W')}` : ''}`,
+        ]),
+      });
+  }
   if (inst.type !== 'air' && inst.circuits.length) {
     out.push({
       title: 'Other circuits',

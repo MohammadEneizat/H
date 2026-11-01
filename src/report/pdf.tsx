@@ -1,6 +1,14 @@
 // PDF report: A4, generated in the browser with jsPDF (loaded on demand from cdnjs).
 import React from 'react';
-import { sweepRating, type CableSpec, type InstallationSpec, type RatingResult } from '../engine';
+import {
+  calculateRating,
+  numericRating,
+  sweepRating,
+  type CableSpec,
+  type InstallationSpec,
+  type RatingResult,
+  type RouteSpec,
+} from '../engine';
 import {
   AirSvg,
   CableSectionSvg,
@@ -14,7 +22,9 @@ import {
 import { amps, fmt } from '../ui/format';
 import { PALETTES } from '../ui/theme';
 import { svgMarkup, svgToPng } from './render';
-import { calcSections, inputSections, summaryChips } from './sections';
+import { calcSections, inputSections, summaryChips, typeLabel } from './sections';
+import type { NumericData } from '../ui/useNumeric';
+import { TrenchSvg, trenchHeat, trenchScene, type TrenchScene } from '../ui/TrenchEditor';
 
 const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
 const FONT_REGULAR = 'fonts/DejaVuSans-subset.ttf';
@@ -291,10 +301,14 @@ export interface ReportInput {
   cable: CableSpec;
   inst: InstallationSpec;
   result: RatingResult;
+  /** Numerical model result for a trench layout, if available */
+  numeric?: NumericData | null;
+  /** Cable route, if any */
+  route?: RouteSpec;
 }
 
 /** Builds the PDF report and returns it as a Blob. */
-export async function buildPdfReport({ cable, inst, result: r }: ReportInput): Promise<Blob> {
+export async function buildPdfReport({ cable, inst, result: r, numeric, route }: ReportInput): Promise<Blob> {
   if (!r.ok) throw new Error('Complete the inputs so the rating can be calculated first.');
   const [JsPDF, regular, bold] = await Promise.all([loadJsPdf(), fontBase64(FONT_REGULAR), fontBase64(FONT_BOLD)]);
   const doc: Doc = new JsPDF({ unit: 'mm', format: 'a4', compress: true });
@@ -315,7 +329,23 @@ export async function buildPdfReport({ cable, inst, result: r }: ReportInput): P
   let overviewPng: { png: string; aspect: number } | null = null;
   let detailPng: { png: string; aspect: number } | null = null;
   let airPng: { png: string; aspect: number } | null = null;
-  const scene = inst.type === 'air' ? null : buildScene(cable, inst, r, pal);
+  const isTrench = inst.type === 'trench';
+  let numData: NumericData | null = numeric ?? null;
+  if (isTrench && !numData) {
+    const out = numericRating(cable, inst, r);
+    if (out && out.result.ok) numData = { ...out, key: '' };
+  }
+  let trenchPng: { png: string; aspect: number } | null = null;
+  let trenchSc: TrenchScene | null = null;
+  if (isTrench) {
+    trenchSc = trenchScene(cable, inst, r, numData ? { status: 'ready', data: numData, fresh: true } : null, pal);
+    if (trenchSc) {
+      const heat = trenchHeat(trenchSc, pal);
+      const tf = svgMarkup(<TrenchSvg inst={inst} scene={trenchSc} heat={heat} pal={pal} idPrefix="rt" showHeat />);
+      trenchPng = { png: await svgToPng(tf.markup, tf.height / tf.width, 1800), aspect: tf.height / tf.width };
+    }
+  }
+  const scene = inst.type === 'air' || isTrench ? null : buildScene(cable, inst, r, pal);
   if (scene) {
     const heat = sceneHeat(scene, r, pal);
     const ov = svgMarkup(<InstallationOverviewSvg scene={scene} heat={heat.overview} pal={pal} idPrefix="ro" inst={inst} />);
@@ -370,6 +400,9 @@ export async function buildPdfReport({ cable, inst, result: r }: ReportInput): P
     ['AC resistance R', `${fmt(r.conductor.R * 1000, 4)} Ω/km`],
     ['Screen loss factor λ1', fmt(r.sheath.lambda1, 4)],
     ['Heat per cable W', `${fmt(r.losses.W, 2)} W/m`],
+    ...(numData && numData.result.ok
+      ? ([['Numerical 2D model', `${amps(numData.result.I)} A (${numData.result.I >= r.I ? '+' : '−'}${fmt(Math.abs((numData.result.I / r.I - 1) * 100), 1)} %)`]] as [string, string][])
+      : []),
     [inst.type === 'air' ? 'External T4*' : 'External T4', `${fmt(r.thermal.t4.T4, 4)} K·m/W`],
   ];
   kv.forEach(([k, v], i) => {
@@ -481,6 +514,40 @@ export async function buildPdfReport({ cable, inst, result: r }: ReportInput): P
       6.8,
       COL.ink3,
     );
+  } else if (trenchPng && trenchSc) {
+    const h = Math.min(w.width * trenchPng.aspect, 105);
+    const wImg = h / trenchPng.aspect;
+    w.ensure(h + 24);
+    doc.addImage(trenchPng.png, 'PNG', w.x0, w.y, wImg, h);
+    doc.setDrawColor(COL.line);
+    doc.setLineWidth(0.2);
+    doc.rect(w.x0, w.y, wImg, h, 'S');
+    w.y += h + 4;
+    if (trenchSc.heat) {
+      const { tMin, tMax, levels } = trenchSc.heat;
+      const lw = 110;
+      w.font(7, false, COL.ink2);
+      doc.text(trenchSc.numeric ? 'Ground temperature, numerical model, °C' : 'Ground temperature, IEC superposition, °C', w.x0, w.y, { baseline: 'top' });
+      w.y += 3.8;
+      const n = 80;
+      for (let i = 0; i < n; i++) {
+        doc.setFillColor(heatScaleColor(pal, (i + 0.5) / n));
+        doc.rect(w.x0 + (lw * i) / n, w.y, lw / n + 0.05, 3, 'F');
+      }
+      doc.setDrawColor(COL.line);
+      doc.rect(w.x0, w.y, lw, 3, 'S');
+      w.font(6.3, false, COL.ink3);
+      for (const tt of [tMin, ...levels, tMax]) {
+        const x = w.x0 + ((tt - tMin) / (tMax - tMin)) * lw;
+        doc.text(fmt(tt, tt % 1 ? 1 : 0), x, w.y + 4, { baseline: 'top', align: tt === tMin ? 'left' : tt === tMax ? 'right' : 'center' });
+      }
+      w.y += 9;
+    }
+    w.para(
+      'Trench cross-section to scale with ground layers, fill zones, cover tiles and warning tape. The temperature field is the numerical model at its own rating; the IEC rating treats the fill zone around the cables as a backfill rectangle.',
+      6.8,
+      COL.ink3,
+    );
   } else if (airPng) {
     const wImg = Math.min(w.width, 100);
     const hImg = wImg * airPng.aspect;
@@ -503,6 +570,88 @@ export async function buildPdfReport({ cable, inst, result: r }: ReportInput): P
     );
   }
 
+  // ---- Route ----
+  if (route && route.sections.length) {
+    let chain = 0;
+    const rows = route.sections.map((sec, i) => {
+      const from = chain;
+      chain += Math.max(0, sec.length_m || 0);
+      const rr = calculateRating(cable, sec.inst);
+      return { sec, i, from, to: chain, I: rr.ok ? rr.I : NaN };
+    });
+    const valid = rows.filter((x) => Number.isFinite(x.I));
+    const minI = valid.length ? Math.min(...valid.map((x) => x.I)) : NaN;
+    const bottleneck = valid.find((x) => x.I === minI);
+    const chartH2 = 52;
+    w.ensure(chartH2 + 40);
+    w.heading('Cable route');
+    w.para(
+      Number.isFinite(minI) && bottleneck
+        ? `Route rating ${amps(minI)} A, limited by section ${bottleneck.i + 1} (${bottleneck.sec.name}). ${rows.length} sections, ${Math.round(chain).toLocaleString('en-GB')} m. Ratings by the IEC method.`
+        : 'No section could be rated.',
+      7.6,
+      COL.ink,
+    );
+    // bar profile
+    const x0 = w.x0 + 11;
+    const x1 = w.x1 - 2;
+    const yTop = w.y + 4;
+    const yBase = w.y + chartH2 - 8;
+    const maxI = Math.max(...valid.map((x) => x.I), 1);
+    const ticks = niceScale(0, maxI * 1.08, 4);
+    const top = ticks[ticks.length - 1];
+    const sy = (v: number) => yBase - (v / top) * (yBase - yTop);
+    const sx = (v: number) => x0 + (chain > 0 ? (v / chain) * (x1 - x0) : 0);
+    doc.setLineWidth(0.15);
+    doc.setDrawColor(COL.line2);
+    w.font(6.5, false, COL.ink3);
+    for (const tk of ticks) {
+      doc.line(x0, sy(tk), x1, sy(tk));
+      doc.text(amps(tk), x0 - 1.5, sy(tk), { baseline: 'middle', align: 'right' });
+    }
+    for (const row of rows) {
+      if (!Number.isFinite(row.I)) continue;
+      const bx = sx(row.from) + 0.3;
+      const bw = Math.max(0.6, sx(row.to) - sx(row.from) - 0.6);
+      doc.setFillColor(row === bottleneck ? COL.accent : '#b9c1c8');
+      doc.rect(bx, sy(row.I), bw, yBase - sy(row.I), 'F');
+      w.font(6.3, false, COL.ink3);
+      if (bw > 4) doc.text(String(row.i + 1), bx + bw / 2, yBase + 1.5, { baseline: 'top', align: 'center' });
+      if (bw > 9) {
+        w.font(6.3, true);
+        doc.text(amps(row.I), bx + bw / 2, sy(row.I) - 1, { baseline: 'bottom', align: 'center' });
+      }
+    }
+    if (Number.isFinite(minI)) {
+      doc.setDrawColor(COL.accent);
+      doc.setLineDashPattern([1.2, 0.8], 0);
+      doc.line(x0, sy(minI), x1, sy(minI));
+      doc.setLineDashPattern([], 0);
+    }
+    w.font(6.5, false, COL.ink3);
+    doc.text('Chainage, sections numbered', x1, yBase + 5, { baseline: 'top', align: 'right' });
+    w.y += chartH2 + 2;
+    w.table(
+      [
+        { head: '#', w: 8 },
+        { head: 'Section', w: 62 },
+        { head: 'Installation', w: 32 },
+        { head: 'Chainage', w: 30, align: 'right' },
+        { head: 'Length', w: 20, align: 'right' },
+        { head: 'Rating', w: w.width - 152, align: 'right', bold: true },
+      ],
+      rows.map((x) => [
+        String(x.i + 1),
+        x.sec.name,
+        typeLabel[x.sec.inst.type],
+        `${Math.round(x.from).toLocaleString('en-GB')}–${Math.round(x.to).toLocaleString('en-GB')} m`,
+        `${Math.round(x.sec.length_m).toLocaleString('en-GB')} m`,
+        Number.isFinite(x.I) ? `${amps(x.I)} A` : '–',
+      ]),
+      { highlight: (i) => rows[i] === bottleneck },
+    );
+  }
+
   // ---- Sensitivity ----
   const chartH = 58;
   w.ensure(chartH + 26);
@@ -510,7 +659,11 @@ export async function buildPdfReport({ cable, inst, result: r }: ReportInput): P
   w.para('Rating of the main circuit when one input changes and all others stay as entered.', 7.2);
   const cw = (w.width - 8) / 2;
   const range = (a: number, b: number, n = 20) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
-  if (inst.type === 'air') {
+  if (isTrench) {
+    lineChart(w, w.x0, w.y, cw, chartH, 'Rating against ground temperature (IEC)', 'Ground temperature (°C)', sweepRating(cable, inst, 'ambient_C', range(0, 40)), { x: inst.ambient_C, I: r.I }, 0);
+    if (!inst.touching)
+      lineChart(w, w.x0 + cw + 8, w.y, cw, chartH, 'Rating against spacing (IEC)', 'Axial spacing (mm)', sweepRating(cable, inst, 'spacing_mm', range(inst.spacing_mm * 0.5, inst.spacing_mm * 2)), { x: inst.spacing_mm, I: r.I }, 0);
+  } else if (inst.type === 'air') {
     lineChart(w, w.x0, w.y, cw, chartH, 'Rating against air temperature', 'Air temperature (°C)', sweepRating(cable, inst, 'ambient_C', range(10, 50)), { x: inst.ambient_C, I: r.I }, 0);
     if (inst.air.arrangement === 'isolated') {
       const De = r.geometry.De;
@@ -531,6 +684,30 @@ export async function buildPdfReport({ cable, inst, result: r }: ReportInput): P
     7.2,
   );
   const { sections, lambda } = calcSections(inst, r);
+  if (numData && numData.result.ok) {
+    w.subheading('Numerical 2D ground model', w.tableHeight(6));
+    w.table(
+      [
+        { head: 'Quantity', w: 74 },
+        { head: 'Symbol', w: 18 },
+        { head: 'Value', w: 30, align: 'right', bold: true },
+        { head: 'Unit', w: 22, color: COL.ink3 },
+        { head: 'Reference', w: w.width - 144, color: COL.ink3 },
+      ],
+      [
+        ['Grid cells', '', (numData.numeric.nx * numData.numeric.ny).toLocaleString('en-GB'), '', 'IEC TR 62095'],
+        ['External thermal resistance, hottest cable', 'T4', fmt(numData.result.thermal.t4.T4, 4), 'K·m/W', ''],
+        ['External thermal resistance, IEC', 'T4', fmt(r.thermal.t4.T4, 4), 'K·m/W', '2-1 2.2'],
+        ['Rating, numerical model', 'I', amps(numData.result.I), 'A', ''],
+        ['Rating, IEC 60287', 'I', amps(r.I), 'A', '1-1 1.4'],
+      ],
+    );
+    w.para(
+      'Finite-volume model of the ground with every layer, fill zone and tile; ground surface and far boundaries at ambient; cables and ducts as conducting bodies. Cable losses, internal thermal resistances and the duct air gap follow IEC 60287.',
+      6.8,
+      COL.ink3,
+    );
+  }
   const calcCols = [
     { head: 'Quantity', w: 74 },
     { head: 'Symbol', w: 18, color: COL.ink },

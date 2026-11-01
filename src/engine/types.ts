@@ -1,6 +1,7 @@
 import type { FieldModel } from './field';
 import type {
   AirArrangement,
+  GroundMaterial,
   ConductorConstruction,
   ConductorMaterial,
   DuctKey,
@@ -72,7 +73,7 @@ export interface CableSpec {
   overallDiameter_mm?: Override;
 }
 
-export type InstallationType = 'direct' | 'ducts' | 'ductbank' | 'air';
+export type InstallationType = 'direct' | 'ducts' | 'ductbank' | 'air' | 'trench';
 export type LoadMode = 'rated' | 'fixed';
 /** How the rated circuits share the thermal limit when there is more than one circuit. */
 export type RatingMode = 'own-limit' | 'equal-current';
@@ -102,6 +103,63 @@ export interface CircuitSpec {
   /** 'rated': the circuit is rated together with the main circuit; 'fixed': it carries current_A */
   load: LoadMode;
   current_A: number;
+}
+
+/** A layer of native ground, stacked from the surface down; the last layer continues downwards. */
+export interface SoilLayer {
+  id: string;
+  name: string;
+  material: GroundMaterial;
+  thickness_m: number;
+  rho: number;
+}
+
+/** Fill of the trench between two depths, wall to wall. */
+export interface TrenchZone {
+  id: string;
+  name: string;
+  material: GroundMaterial;
+  rho: number;
+  top_m: number;
+  bottom_m: number;
+}
+
+/** Cover tile row or warning tape (tape is drawn but has no thermal effect). */
+export interface TrenchSlab {
+  id: string;
+  kind: 'tile' | 'tape';
+  x_m: number;
+  /** Depth of the top of the slab (m) */
+  depth_m: number;
+  width_m: number;
+  thickness_m: number;
+  rho: number;
+}
+
+/** Trench cross-section and the ground around it. Lengths in m, x measured from the main circuit axis origin. */
+export interface TrenchSpec {
+  /** false: no trench (for example a drilled crossing); cables lie in the layered ground */
+  present: boolean;
+  centreX_m: number;
+  depth_m: number;
+  bottomWidth_m: number;
+  topWidth_m: number;
+  surface: 'grass' | 'asphalt' | 'paving';
+  layers: SoilLayer[];
+  zones: TrenchZone[];
+  slabs: TrenchSlab[];
+  /** Cables in ducts (one per cable, using the duct settings) */
+  ducted: boolean;
+}
+
+/** Rectangular zone of different thermal resistivity around the cables (IEC 60287-2-1 backfill / duct bank method). */
+export interface BackfillSpec {
+  name: string;
+  centreX_m: number;
+  centreDepth_m: number;
+  width_m: number;
+  height_m: number;
+  rho: number;
 }
 
 /** The installation and the main three-phase circuit of single-core cables. Depths in m, spacings in mm. */
@@ -153,6 +211,12 @@ export interface InstallationSpec {
   ratingMode: RatingMode;
   /** Horizontal position of this circuit's centre (m); 0 for the main circuit */
   circuitX_m?: number;
+  /** Horizontal position of the main circuit (m), used by the trench editor; default 0 */
+  mainX_m?: number;
+  /** Trench layout (installation type 'trench') */
+  trench?: TrenchSpec;
+  /** Backfill rectangle for direct burial or ducts (set from a trench for the IEC method) */
+  backfill?: BackfillSpec | null;
   air: {
     arrangement: AirArrangement;
     solar: boolean;
@@ -319,4 +383,18 @@ export interface TemperatureResult {
   lambda1: number;
   W: number;
   iterations: number;
+}
+
+/** A stretch of the cable route with its own installation. */
+export interface RouteSection {
+  id: string;
+  name: string;
+  length_m: number;
+  inst: InstallationSpec;
+}
+
+/** The cable route: sections in order from the start; `activeId` is the section being edited. */
+export interface RouteSpec {
+  sections: RouteSection[];
+  activeId: string | null;
 }
