@@ -158,21 +158,30 @@ export function CircuitsForm({ inst, cable, library, onChange }: Props) {
               }}
             />
           </div>
-          <NumField
-            id={`c-${c.id}-x`}
-            label="Horizontal position"
-            unit="m"
-            value={c.x_m}
-            onChange={(v) => setCircuit(c.id, { x_m: num(v) })}
-            hint="Centre to centre from C1"
-          />
-          <NumField
-            id={`c-${c.id}-depth`}
-            label="Depth to centre"
-            unit="m"
-            value={c.depth_m}
-            onChange={(v) => setCircuit(c.id, { depth_m: num(v) })}
-          />
+          {inst.type === 'trench' && c.conduit && (inst.conduits ?? []).some((k) => k.id === c.conduit) ? (
+            <p className="field-hint field-wide">
+              Lies in the conduit {(inst.conduits ?? []).find((k) => k.id === c.conduit)!.name}; move or resize it in the
+              Cross-section panel.
+            </p>
+          ) : (
+            <>
+              <NumField
+                id={`c-${c.id}-x`}
+                label="Horizontal position"
+                unit="m"
+                value={c.x_m}
+                onChange={(v) => setCircuit(c.id, { x_m: num(v) })}
+                hint="Centre to centre from C1"
+              />
+              <NumField
+                id={`c-${c.id}-depth`}
+                label="Depth to centre"
+                unit="m"
+                value={c.depth_m}
+                onChange={(v) => setCircuit(c.id, { depth_m: num(v) })}
+              />
+            </>
+          )}
           <Segmented
             id={`c-${c.id}-formation`}
             label="Formation"

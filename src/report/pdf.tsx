@@ -395,7 +395,7 @@ export async function buildPdfReport({ cable, inst, result: r, numeric }: Report
     ['Temperatures θc / θs / θe', `${fmt(r.temperatures.conductor, 1)} / ${fmt(r.temperatures.sheath, 1)} / ${fmt(r.temperatures.surface, 1)} °C`],
     ['AC resistance R', `${fmt(r.conductor.R * 1000, 4)} Ω/km`],
     ['Screen loss factor λ1', fmt(r.sheath.lambda1, 4)],
-    ['Heat per cable W', `${fmt(r.losses.W, 2)} W/m`],
+    r.geometry.cores === 3 ? ['Heat per cable n·W', `${fmt(3 * r.losses.W, 2)} W/m`] : ['Heat per cable W', `${fmt(r.losses.W, 2)} W/m`],
     ...(numData && numData.result.ok
       ? ([['Numerical 2D model', `${amps(numData.result.I)} A (${numData.result.I >= r.I ? '+' : '−'}${fmt(Math.abs((numData.result.I / r.I - 1) * 100), 1)} %)`]] as [string, string][])
       : []),
@@ -434,7 +434,7 @@ export async function buildPdfReport({ cable, inst, result: r, numeric }: Report
           c.load === 'rated' ? 'Rated' : 'Fixed',
           `${amps(c.I)} A`,
           `${fmt(c.hottestTemp, 1)} / ${fmt(c.maxTemp, 0)} °C`,
-          `${fmt(c.W, 1)} W/m`,
+          `${fmt(c.W * (c.cores === 3 ? 3 : 1), 1)} W/m`,
           `+${fmt(c.mutualRise, 1)} K`,
           over ? 'Over' : atLimit ? 'At limit' : 'OK',
         ];
@@ -630,9 +630,10 @@ export async function buildPdfReport({ cable, inst, result: r, numeric }: Report
     { head: 'IEC 60287', w: w.width - 144, color: COL.ink3 },
   ];
   for (const sec of sections) {
-    w.subheading(sec.title, w.tableHeight(sec.rows.length + (sec.title.startsWith('Screen') ? 4 : 0)));
+    const lambdaTable = sec.title.startsWith('Screen') && lambda.length > 0;
+    w.subheading(sec.title, w.tableHeight(sec.rows.length + (lambdaTable ? 4 : 0)));
     w.table(calcCols, sec.rows.map((row) => [row[0], row[1], row[2], row[3], row[4] ?? '']));
-    if (sec.title.startsWith('Screen')) {
+    if (lambdaTable) {
       w.table(
         [
           { head: 'Cable', w: 74 },

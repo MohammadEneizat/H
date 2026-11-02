@@ -34,8 +34,13 @@ export function summaryChips(inst: InstallationSpec, r: RatingResult): string[] 
     typeLabel[inst.type],
     inst.type === 'air'
       ? AIR_CONSTANTS[inst.air.arrangement].label
-      : `${inst.formation === 'trefoil' ? 'Trefoil' : 'Flat'}, ${inst.touching ? 'touching' : `${fmt(inst.spacing_mm, 0)} mm`}`,
-    bondLabel[inst.bonding],
+      : r.geometry.cores === 3
+        ? 'Three-core cable'
+        : `${inst.formation === 'trefoil' ? 'Trefoil' : 'Flat'}, ${inst.touching ? 'touching' : `${fmt(inst.spacing_mm, 0)} mm`}`,
+    ...(r.geometry.cores === 3 || !Number.isFinite(r.sheath.Rs20) ? [] : [bondLabel[inst.bonding]]),
+    ...(inst.type === 'trench' && inst.mainConduit && (inst.conduits ?? []).some((k) => k.id === inst.mainConduit)
+      ? [`In ${(inst.conduits ?? []).find((k) => k.id === inst.mainConduit)!.name}`]
+      : []),
     ...(r.system ? [`${r.system.circuits.length} circuits`] : []),
     inst.type === 'air'
       ? `${fmt(inst.ambient_C, 0)} °C air`
@@ -82,20 +87,35 @@ export function calcSections(inst: InstallationSpec, r: RatingResult): { section
     ],
   ];
 
-  const sheath: Row[] = [
+  const three = r.geometry.cores === 3;
+  const noScreen = three || !Number.isFinite(r.sheath.Rs20);
+  const sheath: Row[] = noScreen
+    ? [['No metallic screen or sheath, so no screen losses', 'λ1', '0', '', '2.3']]
+    : [
     ['Screen resistance at 20 °C', 'Rs,20', perKm(r.sheath.Rs20), 'Ω/km', '2.3'],
     [`Screen resistance at ${fmt(r.temperatures.sheath, 1)} °C`, 'Rs', perKm(r.sheath.Rs), 'Ω/km', '2.3'],
     ['Screen reactance', inst.formation === 'flat' && inst.transposed ? 'X1' : 'X', perKm(r.sheath.X), 'Ω/km', '2.3.1'],
     ['Eddy current parameter', 'm', sig(r.sheath.m, 4), '', '2.3.6'],
   ];
-  if (r.sheath.Ft !== null) sheath.push(['Eddy loss reduction (Milliken)', 'Ft', sig(r.sheath.Ft, 4), '', '2.3.1']);
-  sheath.push(['Loss factor used (largest cable)', 'λ1', sig(r.sheath.lambda1, 4), '', '2.3']);
+  if (!noScreen && r.sheath.Ft !== null) sheath.push(['Eddy loss reduction (Milliken)', 'Ft', sig(r.sheath.Ft, 4), '', '2.3.1']);
+  if (!noScreen) sheath.push(['Loss factor used (largest cable)', 'λ1', sig(r.sheath.lambda1, 4), '', '2.3']);
 
-  const thermal: Row[] = [
-    ['Insulation (conductor to screen)', 'T1', sig(r.thermal.T1, 4), 'K·m/W', '2-1 2.1.1'],
+  const tc = r.thermal.threeCore;
+  const thermal: Row[] = [];
+  if (tc) {
+    thermal.push(['Radius of circle around the conductors', 'r1', fmt(tc.r1, 2), 'mm', '2-1 4.1.2.2']);
+    thermal.push(['Diameter over the cores and filler (belt)', 'da', fmt(tc.da, 2), 'mm', '2-1 4.1.2.2']);
+    thermal.push(['Insulation between conductors', 't', fmt(tc.t, 2), 'mm', '2-1 4.1.2.2']);
+    thermal.push(['Sector factor 1 + 3t/[2π(dx + t) − t]', 'F2', sig(tc.F2, 4), '', '2-1 4.1.2.2.6']);
+    thermal.push(['Geometric factor 3·F2·ln(da/2r1)', 'G', sig(tc.G, 4), '', tc.shape === 'sector' ? '2-1 4.1.2.2.6' : '2-1 4.1.2.2.4 (approx.)']);
+    if (tc.filler) thermal.push(['Filler term 0.031(ρf − ρi)·e^(0.67·t1/dc)', '', sig(tc.filler, 4), 'K·m/W', '2-1 4.1.2.2.4']);
+  }
+  thermal.push(
+    [tc ? 'Insulation, one conductor to oversheath' : 'Insulation (conductor to screen)', 'T1', sig(r.thermal.T1, 4), 'K·m/W', tc ? '2-1 4.1.2.2' : '2-1 2.1.1'],
     ['Bedding (no armour)', 'T2', '0', 'K·m/W', '2-1 2.1.2'],
     ['Oversheath', 'T3', sig(r.thermal.T3, 4), 'K·m/W', '2-1 2.1.3'],
-  ];
+  );
+  if (tc) thermal.push(['Load-carrying conductors in the cable', 'n', '3', '', '1.4.1.1']);
   if (t4.T4p !== undefined) {
     thermal.push(['Air space in duct', 'T4′', sig(t4.T4p, 4), 'K·m/W', '2-1 2.2.7.1']);
     thermal.push(['Duct wall', 'T4″', sig(t4.T4pp, 4), 'K·m/W', '2-1 2.2.7.2']);
@@ -122,18 +142,19 @@ export function calcSections(inst: InstallationSpec, r: RatingResult): { section
     ['Conductor loss I²R', 'Wc', sig(r.losses.Wc, 4), 'W/m', '1.4'],
     ['Screen loss λ1·Wc', 'Ws', sig(r.losses.Ws, 4), 'W/m', '1.4'],
     ['Dielectric loss', 'Wd', sig(r.losses.Wd, 4), 'W/m', '2.2'],
-    ['Total heat per cable', 'W', sig(r.losses.W, 4), 'W/m', ''],
+    [three ? 'Total heat per core' : 'Total heat per cable', 'W', sig(r.losses.W, 4), 'W/m', ''],
   ];
+  if (three) losses.push(['Total heat per cable n·W', 'n·W', sig(3 * r.losses.W, 4), 'W/m', '']);
   const temps: Row[] = [
     ['Conductor', 'θc', fmt(r.temperatures.conductor, 1), '°C', ''],
-    ['Metallic screen / sheath', 'θs', fmt(r.temperatures.sheath, 1), '°C', ''],
+    [three ? 'Under the oversheath' : 'Metallic screen / sheath', 'θs', fmt(r.temperatures.sheath, 1), '°C', ''],
     ['Cable surface', 'θe', fmt(r.temperatures.surface, 1), '°C', ''],
   ];
   if (r.temperatures.ductInner !== undefined)
     temps.push(['Duct inner surface', 'θd', fmt(r.temperatures.ductInner, 1), '°C', '']);
   temps.push([inst.type === 'air' ? 'Ambient air' : 'Ambient soil', 'θa', fmt(inst.ambient_C, 1), '°C', '']);
 
-  const lambda: Row[] = r.sheath.cables.map((sc) => [sc.label, '', sig(sc.lambda1p, 4), sig(sc.lambda1pp, 4), sig(sc.lambda1, 4)]);
+  const lambda: Row[] = noScreen ? [] : r.sheath.cables.map((sc) => [sc.label, '', sig(sc.lambda1p, 4), sig(sc.lambda1pp, 4), sig(sc.lambda1, 4)]);
 
   return {
     sections: [
@@ -159,13 +180,16 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
   const jac = JACKETS[cable.jacket.material];
   const kk = defaultSkinProximity(cable.conductor.material, cable.conductor.construction, ins.system, cable.conductor.millikenWires);
   const s = cable.screen;
+  const three = cable.cores === 3;
+  const tcIn = cable.threeCore;
   const cableRows: [string, string][] = [
     ['Cable', cable.name],
+    ['Cable type', three ? `Three-core, ${tcIn?.shape === 'round' ? 'round' : 'sector-shaped'} conductors, no metallic screen` : 'Single-core'],
     ['Rated voltage U0', v(cable.U0_kV, 1, 'kV')],
     ['Maximum conductor temperature', v(cable.maxTemp_C, 0, '°C')],
     [
       'Conductor',
-      `${METALS[cable.conductor.material].label}, ${cable.conductor.construction === 'milliken' ? `Milliken (${cable.conductor.millikenWires.replace('-', ' ')} wires)` : cable.conductor.construction === 'solid' ? 'round solid' : 'round stranded'}, ${v(cable.conductor.area_mm2, 0, 'mm²')}`,
+      `${METALS[cable.conductor.material].label}, ${cable.conductor.construction === 'milliken' ? `Milliken (${cable.conductor.millikenWires.replace('-', ' ')} wires)` : `${three ? (tcIn?.shape === 'round' ? 'round' : 'sector-shaped') : 'round'} ${cable.conductor.construction === 'solid' ? 'solid' : 'stranded'}`}, ${three ? '3 × ' : ''}${v(cable.conductor.area_mm2, 0, 'mm²')}`,
     ],
     ['Conductor diameter', v(cable.conductor.diameter_mm, 1, 'mm')],
     ['DC resistance at 20 °C', v(cable.conductor.R20_ohm_km, 4, 'Ω/km')],
@@ -176,14 +200,23 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
     ['Insulation ρT', opt(cable.insulation.rhoT, String(ins.rhoT), 2, 'K·m/W')],
     ['Insulation εr / tan δ', `${opt(cable.insulation.epsR, String(ins.epsR), 2)} / ${opt(cable.insulation.tanDelta, String(ins.tanDelta), 4)}`],
     ['Insulation screen', v(cable.insulationScreen_mm, 1, 'mm')],
-    ['Tapes under metallic screen', v(cable.bedding_mm, 1, 'mm')],
-    [
-      'Metallic screen / sheath',
-      `${s.form === 'wires' ? 'Wire screen' : s.form === 'smooth' ? 'Smooth sheath' : 'Corrugated sheath'}, ${METALS[s.material].label}, ${v(s.thickness_mm, 2, 'mm')}${s.wireCount ? `, ${s.wireCount} wires` : ''}`,
-    ],
-    ['Screen cross-section', s.area_mm2 ? v(s.area_mm2, 1, 'mm²') : 'from geometry or resistance'],
-    ['Screen resistance at 20 °C', s.R20_ohm_km ? v(s.R20_ohm_km, 4, 'Ω/km') : 'from area'],
-    ...(s.form === 'corrugated' ? ([['Diameter over crests Doc', v(s.corrugationOD_mm, 1, 'mm')]] as [string, string][]) : []),
+    ...((three
+      ? [
+          ['Inner covering (filler)', typeof tcIn?.innerCovering_mm === 'number' ? v(tcIn.innerCovering_mm, 1, 'mm') : 'from the overall diameter'],
+          ['Circle around the conductors r1', typeof tcIn?.r1_mm === 'number' ? v(tcIn.r1_mm, 1, 'mm') : 'calculated'],
+        ]
+      : s.form === 'none'
+        ? [['Metallic screen / sheath', 'none']]
+        : [
+            ['Tapes under metallic screen', v(cable.bedding_mm, 1, 'mm')],
+            [
+              'Metallic screen / sheath',
+              `${s.form === 'wires' ? 'Wire screen' : s.form === 'smooth' ? 'Smooth sheath' : 'Corrugated sheath'}, ${METALS[s.material].label}, ${v(s.thickness_mm, 2, 'mm')}${s.wireCount ? `, ${s.wireCount} wires` : ''}`,
+            ],
+            ['Screen cross-section', s.area_mm2 ? v(s.area_mm2, 1, 'mm²') : 'from geometry or resistance'],
+            ['Screen resistance at 20 °C', s.R20_ohm_km ? v(s.R20_ohm_km, 4, 'Ω/km') : 'from area'],
+            ...(s.form === 'corrugated' ? ([['Diameter over crests Doc', v(s.corrugationOD_mm, 1, 'mm')]] as [string, string][]) : []),
+          ]) as [string, string][]),
     ['Oversheath', `${jac.label}, ${v(cable.jacket.thickness_mm, 1, 'mm')}`],
     ['Oversheath ρT', opt(cable.jacket.rhoT, String(jac.rhoT), 2, 'K·m/W')],
     ['Overall diameter (datasheet)', cable.overallDiameter_mm ? v(cable.overallDiameter_mm, 1, 'mm') : 'not entered'],
@@ -276,12 +309,28 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
       rows: inst.heatSources.map((h) => [h.name, `${v(h.W, 0, 'W/m')}, ⌀ ${v(h.diameter_mm, 0, 'mm')}, x ${v(h.x_m, 2, 'm')}, depth ${v(h.depth_m, 2, 'm')}`]),
     });
   }
+  const conduits = inst.type === 'trench' ? (inst.conduits ?? []) : [];
+  if (conduits.length) {
+    out.push({
+      title: 'Shared conduits',
+      rows: conduits.map((k) => {
+        const members = [
+          ...(inst.mainConduit === k.id ? ['C1'] : []),
+          ...inst.circuits.filter((c) => c.conduit === k.id).map((c) => c.name),
+        ];
+        return [
+          k.name,
+          `${DUCTS[k.material]?.label ?? k.material} ${v(k.outerD_mm, 0, 'mm')} / ${v(k.innerD_mm, 0, 'mm')}, x ${v(k.x_m, 2, 'm')}, depth to centre ${v(k.depth_m, 2, 'm')}; holds ${members.length ? members.join(', ') : 'no circuit'}`,
+        ];
+      }),
+    });
+  }
   if (inst.type !== 'air' && inst.circuits.length) {
     out.push({
       title: 'Other circuits',
       rows: inst.circuits.map((c) => [
         c.name,
-        `${(c.cable?.name ?? 'Same cable as C1').replace(/^Example: /, '')}; x ${v(c.x_m, 2, 'm')}, depth ${v(c.depth_m, 2, 'm')}; ${c.formation}${c.rotated ? (c.formation === 'flat' ? ' vertical' : ' point down') : ''}${c.touching ? ' touching' : `, ${v(c.spacing_mm, 0, 'mm')}`}${c.ducted ? `, in ducts ⌀ ${v(c.duct?.outerD_mm ?? inst.duct.outerD_mm, 0, 'mm')}` : c.ducted === false ? ', direct' : ''}; ${bondLabel[c.bonding].toLowerCase()}; ${c.load === 'fixed' ? `fixed ${v(c.current_A, 0, 'A')}` : 'rated'}`,
+        `${(c.cable?.name ?? 'Same cable as C1').replace(/^Example: /, '')}; ${c.conduit && conduits.some((k) => k.id === c.conduit) ? `in ${conduits.find((k) => k.id === c.conduit)!.name}; ` : ''}x ${v(c.x_m, 2, 'm')}, depth ${v(c.depth_m, 2, 'm')}; ${(c.cable ?? cable).cores === 3 ? 'three-core cable' : `${c.formation}${c.rotated ? (c.formation === 'flat' ? ' vertical' : ' point down') : ''}${c.touching ? ' touching' : `, ${v(c.spacing_mm, 0, 'mm')}`}`}${c.ducted ? `, in ducts ⌀ ${v(c.duct?.outerD_mm ?? inst.duct.outerD_mm, 0, 'mm')}` : c.ducted === false ? ', direct' : ''}${(c.cable ?? cable).cores === 3 ? '' : `; ${bondLabel[c.bonding].toLowerCase()}`}; ${c.load === 'fixed' ? `fixed ${v(c.current_A, 0, 'A')}` : 'rated'}`,
       ]),
     });
   }

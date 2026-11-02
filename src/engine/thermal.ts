@@ -8,6 +8,40 @@ export function thermalT1(rhoT: number, t1: number, dc: number): number {
   return (rhoT / TWO_PI) * Math.log(1 + (2 * t1) / dc);
 }
 
+/**
+ * T1 of a three-core cable without metallic screen, between one conductor and the
+ * oversheath (IEC 60287-2-1 4.1.2.2). Sector-shaped conductors (4.1.2.2.6):
+ * G = 3·F2·ln(da/2r1), F2 = 1 + 3t/[2π(dx + t) − t], T1 = ρi/2π·G.
+ * Round conductors (4.1.2.2.4, Equation 1): T1 = ρi/2π·G + 0.031(ρf − ρi)·e^(0.67·t1/dc), where
+ * G of Figure 3 is approximated by the sector formula with dx = dc.
+ */
+export function thermalT1ThreeCore(p: {
+  shape: 'round' | 'sector';
+  rhoI: number;
+  rhoF: number;
+  da: number;
+  r1: number;
+  dc: number;
+  t: number;
+  /** Insulation between conductor and oversheath (round conductors) */
+  t1: number;
+}): { T1: number; G: number; F2: number; filler: number } {
+  const F2 = 1 + (3 * p.t) / (2 * Math.PI * (p.dc + p.t) - p.t);
+  const G = 3 * F2 * Math.log(p.da / (2 * p.r1));
+  const filler = p.shape === 'round' ? 0.031 * (p.rhoF - p.rhoI) * Math.exp((0.67 * p.t1) / p.dc) : 0;
+  return { T1: (p.rhoI / TWO_PI) * G + filler, G, F2, filler };
+}
+
+/**
+ * Equivalent diameter of a group of cables lying in one duct, for T4' (IEC 60287-2-1 4.2.7.1):
+ * two cables 1.65·De, three 2.15·De, four 2.5·De. Beyond four the group is scaled by its area.
+ */
+export function groupEquivalentDiameter(count: number, De: number): { Deq: number; factor: number; extrapolated: boolean } {
+  const table: Record<number, number> = { 1: 1, 2: 1.65, 3: 2.15, 4: 2.5 };
+  const factor = table[count] ?? 2.5 * Math.sqrt(count / 4);
+  return { Deq: factor * De, factor, extrapolated: count > 4 };
+}
+
 /** T3 for an oversheath over a smooth sheath or wire screen: ρT/2π · ln(1 + 2t3/Da) */
 export function thermalT3(rhoT: number, t3: number, Da: number): number {
   return (rhoT / TWO_PI) * Math.log(1 + (2 * t3) / Da);

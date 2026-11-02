@@ -1587,3 +1587,25 @@ textarea {
     border-color: #bbb;
   }
 }
+
+/* ---------- Conduits ---------- */
+.link-btn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.member-list {
+  display: grid;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.member-list .toggle {
+  margin: 0;
+}

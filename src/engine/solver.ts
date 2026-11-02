@@ -2,6 +2,7 @@
 // — IEC 60287-1-1 1.4 (clause 4 in the 2023 edition).
 import type { FieldModel, FieldSource } from './field';
 import { trenchToIec } from './trench';
+import { arrangeInConduit } from './conduit';
 import { deriveGeometry } from './geometry';
 import { conductorAC, capacitance, dielectricLoss, sheathLossFactors } from './losses';
 import {
@@ -18,10 +19,13 @@ import {
   ductAirT4,
   ductBankCorrection,
   ductBankRadius,
+  acoshTerm,
   ductWallT4,
+  groupEquivalentDiameter,
   groupT4PerCable,
   mutualHeatingFactor,
   thermalT1,
+  thermalT1ThreeCore,
   thermalT3,
   thermalT3Corrugated,
   type Point,
@@ -89,7 +93,18 @@ interface Model {
   wdIncluded: boolean;
   wdThreshold: number;
   T1: number;
+  /** Three-core cables: the T1 calculation */
+  t1Info?: { G: number; F2: number; filler: number; r1: number; da: number; t: number; shape: 'round' | 'sector' };
   T3: number;
+  /** Cores per cable (3 for a three-core cable); T3 carries the heat of all of them */
+  mult: number;
+  /**
+   * 3 when the circuit's three positions share one external path (a three-core cable, or a
+   * circuit in a shared conduit): the positions coincide and T4 carries the heat of all three.
+   */
+  share: number;
+  /** Shared conduit holding the circuit */
+  conduit?: { id: string; name: string; x: number; y: number; Do: number; Di: number; De: number; cables: number };
   Rs20: number;
   sheathAt: (thetaS: number, R: number) => SheathResult;
   /** Diameter of the cable or duct whose external resistance is calculated (mm) */
@@ -109,6 +124,14 @@ interface Model {
     couplingRho: number;
     method: string;
     hottest: number;
+    /** Duct air gap T4' is multiplied by this (the cores or cables whose heat crosses it) */
+    airScale?: number;
+    /** Diameter for T4': the cable, or the equivalent diameter of a group in one conduit */
+    airDe?: number;
+    /** Fixed duct air term (already scaled), set for circuits in a shared conduit */
+    sharedAir?: number;
+    /** Mean air temperature in the shared conduit */
+    sharedThetaM?: number;
     U?: number;
     V?: number;
     Y?: number;
@@ -146,13 +169,28 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
 
   const omega = 2 * Math.PI * inst.frequency_Hz;
   const De = g.De;
+  const three = g.cores === 3 && !!g.threeCore;
+  const mult = three ? 3 : 1;
+  const conduit = inst.conduitRef;
+  const share = three || conduit ? 3 : 1;
+  const noScreen = three || cable.screen.form === 'none';
 
   // --- Spacing and positions -------------------------------------------------
   let s: number;
   let touching = inst.touching;
   let formation = inst.formation;
   let objectD = De; // diameter of the object whose external resistance is computed
-  if (inst.type === 'ducts' || inst.type === 'ductbank') {
+  if (conduit) {
+    // Cables of a circuit in a shared conduit lie together: touching trefoil for losses
+    objectD = conduit.outerD_mm;
+    formation = 'trefoil';
+    touching = true;
+    s = De;
+  } else if (three) {
+    objectD = inst.type === 'ducts' || inst.type === 'ductbank' ? inst.duct.outerD_mm : De;
+    s = objectD;
+    touching = true;
+  } else if (inst.type === 'ducts' || inst.type === 'ductbank') {
     objectD = inst.duct.outerD_mm;
     s = touching ? objectD : inst.spacing_mm;
   } else if (inst.type === 'air') {
@@ -164,20 +202,27 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     s = touching ? De : inst.spacing_mm;
   }
   if (!pos(s)) errors.push('Enter the axial spacing between cables.');
-  else if (s < objectD * 0.9999)
+  else if (share === 1 && s < objectD * 0.9999)
     errors.push(
       `The axial spacing (${s.toFixed(1)} mm) is smaller than the ${inst.type === 'ducts' || inst.type === 'ductbank' ? 'duct' : 'cable'} diameter (${objectD.toFixed(1)} mm).`,
     );
   if (!touching && pos(s) && Math.abs(s - objectD) < 1e-6 * objectD) touching = true;
 
-  const depth = inst.depth_m * 1000;
-  const x0 = inst.type === 'air' ? 0 : (inst.circuitX_m ?? 0) * 1000;
-  const rotated = inst.type !== 'air' && !!inst.rotated;
+  const depth = (conduit ? conduit.depth_m : inst.depth_m) * 1000;
+  const x0 = inst.type === 'air' ? 0 : (conduit ? conduit.x_m : (inst.circuitX_m ?? 0)) * 1000;
+  const rotated = share === 1 && inst.type !== 'air' && !!inst.rotated;
   if (rotated) notes.push(formation === 'flat' ? 'Flat formation laid vertically.' : 'Trefoil laid with the point down.');
-  const positions = circuitPositions(formation, s, inst.type === 'air' ? 0 : depth, rotated).map((p) => ({
-    x: p.x + x0,
-    y: p.y,
-  }));
+  const positions =
+    share === 3
+      ? [0, 1, 2].map(() => ({ x: x0, y: inst.type === 'air' ? 0 : depth }))
+      : circuitPositions(formation, s, inst.type === 'air' ? 0 : depth, rotated).map((p) => ({
+          x: p.x + x0,
+          y: p.y,
+        }));
+  // Proximity effect: three-core cables use the distance between conductor axes (IEC 60287-1-1 2.1.4.2)
+  const tc = g.threeCore;
+  const sProx = three && tc ? g.dc + tc.t : s;
+  const sector = three && tc?.shape === 'sector';
 
   // --- Conductor ---------------------------------------------------------------
   const dflt = defaultSkinProximity(
@@ -192,7 +237,9 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
   const alphaC = condMetal.alpha20;
   const Rac = cable.conductor.Rac_ohm_km;
   const conductorAt = (theta: number): ConductorResult => {
-    const ac = conductorAC({ R0, alpha20: alphaC, theta, f: inst.frequency_Hz, ks, kp, dc: g.dc, s });
+    const ac0 = conductorAC({ R0, alpha20: alphaC, theta, f: inst.frequency_Hz, ks, kp, dc: g.dc, s: sProx });
+    // Sector-shaped conductors: two-thirds of the round-conductor proximity effect, dc = dx
+    const ac = sector ? { ...ac0, yp: (ac0.yp * 2) / 3, R: ac0.Rdc * (1 + ac0.ys + (ac0.yp * 2) / 3) } : ac0;
     if (pos(Rac)) {
       const R = (Rac / 1000) * ((1 + alphaC * (theta - 20)) / (1 + alphaC * (thetaMax - 20)));
       return { R0, ks, kp, ...ac, R, fromDatasheet: true };
@@ -211,14 +258,36 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     );
 
   // --- Thermal resistances of the cable ----------------------------------------
-  const T1 = thermalT1(rhoIns, g.t1, g.dc);
+  let T1: number;
+  let t1Info: Model['t1Info'];
+  if (three && tc) {
+    const rhoF = pick(cable.threeCore?.fillerRho, 10);
+    const r = thermalT1ThreeCore({ shape: tc.shape, rhoI: rhoIns, rhoF, da: tc.da, r1: tc.r1, dc: g.dc, t: tc.t, t1: tc.da / 2 - tc.r1 });
+    T1 = r.T1;
+    t1Info = { G: r.G, F2: r.F2, filler: r.filler, r1: tc.r1, da: tc.da, t: tc.t, shape: tc.shape };
+    if (!(tc.da > 2 * tc.r1)) errors.push('The diameter under the oversheath must be larger than the circle around the conductors (2·r1).');
+    notes.push(
+      tc.shape === 'sector'
+        ? `Three-core cable, sector-shaped conductors: T1 = ρi/2π·3·F2·ln(da/2r1) (IEC 60287-2-1 4.1.2.2.6), r1 = ${tc.r1.toFixed(1)} mm, da = ${tc.da.toFixed(1)} mm.`
+        : `Three-core cable, round conductors: T1 = ρi/2π·G + 0.031(ρf − ρi)·e^(0.67·t1/dc) (IEC 60287-2-1 4.1.2.2.4) with ρf = ${rhoF} K·m/W.`,
+    );
+    if (tc.shape === 'round')
+      warnings.push(
+        'G for round three-core conductors (IEC 60287-2-1 Figure 3) is approximated with the sector-conductor formula. Check T1 against the standard.',
+      );
+    notes.push('Three-core cable without metallic screen or armour: λ1 = λ2 = 0, T2 = 0, n = 3 conductors.');
+  } else {
+    T1 = thermalT1(rhoIns, g.t1, g.dc);
+  }
   const T3 =
-    cable.screen.form === 'corrugated' && g.Doc && g.Dit
-      ? thermalT3Corrugated(rhoJacket, g.t3, g.Doc, g.Dit)
-      : thermalT3(rhoJacket, g.t3, g.Da);
+    three && tc
+      ? thermalT3(rhoJacket, g.t3, tc.da)
+      : cable.screen.form === 'corrugated' && g.Doc && g.Dit
+        ? thermalT3Corrugated(rhoJacket, g.t3, g.Doc, g.Dit)
+        : thermalT3(rhoJacket, g.t3, g.Da);
 
   // --- Sheath losses -------------------------------------------------------------------
-  const Rs20 = pos(cable.screen.R20_ohm_km) ? cable.screen.R20_ohm_km / 1000 : metal.rho20 / (g.As * 1e-6);
+  const Rs20 = noScreen ? NaN : pos(cable.screen.R20_ohm_km) ? cable.screen.R20_ohm_km / 1000 : metal.rho20 / (g.As * 1e-6);
   const crossDefault = inst.type === 'direct' ? 0.03 : inst.type === 'air' ? 0.03 : 0.05;
   const crossBondLambda1 = pick(inst.crossBondLambda1, crossDefault);
   if (inst.bonding === 'cross' && !Number.isFinite(inst.crossBondLambda1 as number))
@@ -226,6 +295,10 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
       `Cross-bonding: circulating-current loss factor λ1' = ${crossDefault} assumed for unequal minor sections (enter the value for your design if known).`,
     );
   const sheathAt = (thetaS: number, R: number): SheathResult => {
+    if (noScreen) {
+      const cables = [0, 1, 2].map((i) => ({ label: three ? `Core L${i + 1}` : `Cable L${i + 1}`, lambda1p: 0, lambda1pp: 0, lambda1: 0 }));
+      return { Rs20: NaN, Rs: NaN, rhoS: NaN, X: 0, m: 0, Ft: null, cables, lambda1: 0, governing: 0 };
+    }
     const k = 1 + metal.alpha20 * (thetaS - 20);
     const Rs = Rs20 * k;
     const rhoS = metal.rho20 * k;
@@ -250,10 +323,12 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     });
     return { Rs20, Rs, rhoS, ...out, lambda1: out.cables[governing].lambda1, governing };
   };
-  if (formation === 'flat')
+  if (noScreen && !three) notes.push('No metallic screen: no screen losses (λ1 = 0).');
+  if (formation === 'flat' && share === 1)
     notes.push(
       'Flat formation: the largest loss factor of the three cables is combined with T4 of the hottest position (conservative).',
     );
+  if (conduit && !three) notes.push('Single-core cables in a shared conduit are treated as a touching trefoil for their losses.');
 
   // --- External thermal resistance ------------------------------------------------
   let ext: Model['ext'];
@@ -285,22 +360,48 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     if (inst.type !== 'ductbank' && pos(inst.depth_m) && top <= 0)
       errors.push('The cables are not fully below the ground surface. Increase the depth.');
 
-    const ducted = inst.type !== 'direct';
-    const duct = DUCTS[inst.duct.material];
-    const Dd = inst.duct.innerD_mm;
-    const Do = inst.duct.outerD_mm;
+    const ducted = conduit ? true : inst.type !== 'direct';
+    const duct = DUCTS[conduit ? conduit.material : inst.duct.material];
+    const Dd = conduit ? conduit.innerD_mm : inst.duct.innerD_mm;
+    const Do = conduit ? conduit.outerD_mm : inst.duct.outerD_mm;
+    const group = conduit ? groupEquivalentDiameter(conduit.groupCables, conduit.groupDe) : null;
     let T4pp = 0;
     if (ducted) {
-      if (!pos(Dd) || !pos(Do)) errors.push('Enter the duct inner and outer diameters.');
-      else if (Do <= Dd) errors.push('The duct outer diameter must be larger than the inner diameter.');
-      if (pos(Dd) && Dd <= De) errors.push('The duct inner diameter must be larger than the cable diameter.');
-      if (De < 25 || De > 100)
+      const what = conduit ? `Conduit “${conduit.name}”: ` : '';
+      if (!pos(Dd) || !pos(Do)) errors.push(`${what}enter the duct inner and outer diameters.`);
+      else if (Do <= Dd) errors.push(`${what}the outer diameter must be larger than the inner diameter.`);
+      if (pos(Dd) && Dd <= De) errors.push(`${what}the duct inner diameter must be larger than the cable diameter.`);
+      if (group && group.Deq >= Dd)
+        warnings.push(
+          `Conduit “${conduit!.name}”: the ${conduit!.groupCables} cables (equivalent diameter ${group.Deq.toFixed(0)} mm) may not fit in ${Dd} mm.`,
+        );
+      if (group && conduit!.groupCables > 1) {
+        if (group.extrapolated)
+          warnings.push(
+            `Conduit “${conduit!.name}”: IEC 60287-2-1 gives the equivalent diameter for up to four cables in one duct; ${conduit!.groupCables} cables are extrapolated (${group.factor.toFixed(2)}·De).`,
+          );
+        else if (group.Deq < 75 || group.Deq > 125)
+          warnings.push(
+            `Conduit “${conduit!.name}”: the T4' formula is given for a group equivalent diameter of 75 mm to 125 mm; this group is ${group.Deq.toFixed(0)} mm.`,
+          );
+      } else if (De < 25 || De > 100)
         warnings.push(
           `T4' (air in duct) formula of IEC 60287-2-1 is given for cable diameters of 25 mm to 100 mm; this cable is ${De.toFixed(1)} mm.`,
         );
-      T4pp = ductWallT4(pick(inst.duct.rho, duct.rho), Do, Dd);
+      T4pp = ductWallT4(conduit ? duct.rho : pick(inst.duct.rho, duct.rho), Do, Dd);
     }
     const D = ducted ? Do : De;
+    // Three-core cables and shared conduits: one object carrying the heat of all three positions
+    const groupT = (rho: number) =>
+      share === 3
+        ? {
+            T4: [0, 1, 2].map(() => 3 * (rho / (2 * Math.PI)) * acoshTerm((2 * depth) / D)),
+            hottest: 0,
+            method: conduit
+              ? `Conduit “${conduit.name}” with ${conduit.groupCables} cable${conduit.groupCables > 1 ? 's' : ''}: T4‴ = ρ/2π·ln(u + √(u² − 1)), u = 2L/Do, for the heat of all cables in it; T4′ with ${group && conduit.groupCables > 1 ? `the group's equivalent diameter ${group.factor}·De = ${group.Deq.toFixed(0)} mm` : 'the cable diameter'}`
+              : 'Three-core cable: T4 = ρ/2π·ln(u + √(u² − 1)) for the heat of all three cores',
+          }
+        : groupT4PerCable(rho, D, positions, formation, touching && !rotated, depth);
 
     // Zone of different resistivity around the cables: duct bank, or backfill (IEC 60287-2-1 2.2.7.3)
     const zone =
@@ -345,19 +446,19 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
       }
       if (Math.max(zone.w, zone.h) / Math.min(zone.w, zone.h) >= 3)
         warnings.push(`The equivalent-radius formula for the ${zone.name} is given for a side ratio below 3.`);
-      const gT = groupT4PerCable(zone.rho, D, positions, formation, touching && !rotated, depth);
+      const gT = groupT(zone.rho);
       const rb = ductBankRadius(zone.w, zone.h);
       if (zone.y / rb <= 1) errors.push(`The ${zone.name} is too shallow for its size.`);
       bankUnit = ductBankCorrection(1, inst.soilRho, zone.rho, zone.y, rb);
       bankCorrection = 3 * bankUnit;
       couplingRho = zone.rho;
-      perCable = gT.T4.map((t) => T4pp + t + (bankCorrection as number));
+      perCable = gT.T4.map((t) => share * T4pp + t + (bankCorrection as number));
       method = `${zone.strict ? 'Duct bank' : `Backfill (${zone.name})`} — ${gT.method}, with ρ = ${zone.rho} K·m/W, plus N/2π·(ρe − ρc)·ln(u + √(u² − 1)), u = LG/rb, rb = ${rb.toFixed(0)} mm`;
       hottest = gT.hottest;
     } else {
-      const gT = groupT4PerCable(inst.soilRho, D, positions, formation, touching && !rotated, depth);
-      perCable = gT.T4.map((t) => T4pp + t);
-      method = ducted ? `Ducts in soil — ${gT.method}` : gT.method;
+      const gT = groupT(inst.soilRho);
+      perCable = gT.T4.map((t) => share * T4pp + t);
+      method = ducted && !conduit ? `Ducts in soil — ${gT.method}` : gT.method;
       hottest = gT.hottest;
     }
     ext = {
@@ -370,9 +471,11 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
       couplingRho,
       method,
       hottest,
-      U: pick(inst.duct.U, duct.U),
-      V: pick(inst.duct.V, duct.V),
-      Y: pick(inst.duct.Y, duct.Y),
+      airScale: conduit ? 3 : mult,
+      airDe: group ? group.Deq : De,
+      U: conduit ? duct.U : pick(inst.duct.U, duct.U),
+      V: conduit ? duct.V : pick(inst.duct.V, duct.V),
+      Y: conduit ? duct.Y : pick(inst.duct.Y, duct.Y),
     };
   }
 
@@ -410,6 +513,21 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     wdThreshold: ins.wdThreshold_kV,
     T1,
     T3,
+    t1Info,
+    mult,
+    share,
+    conduit: conduit
+      ? {
+          id: conduit.id,
+          name: conduit.name,
+          x: conduit.x_m * 1000,
+          y: conduit.depth_m * 1000,
+          Do: conduit.outerD_mm,
+          Di: conduit.innerD_mm,
+          De: conduit.groupDe,
+          cables: conduit.groupCables,
+        }
+      : undefined,
     Rs20,
     sheathAt,
     ext,
@@ -418,11 +536,22 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
   };
 }
 
+/** Duct air-gap term T4′ for the model's heat per position (zero outside ducts). */
+function airT4(m: Model, thetaM: number): number {
+  if (m.ext.kind !== 'ducts') return 0;
+  if (m.ext.sharedAir !== undefined) return m.ext.sharedAir;
+  return (m.ext.airScale ?? 1) * ductAirT4(m.ext.U!, m.ext.V!, m.ext.Y!, thetaM, m.ext.airDe ?? m.geometry.De);
+}
+
+/** Oversheath resistance for the heat of one position (all cores of a three-core cable). */
+const T3e = (m: Model) => m.T3 * m.mult;
+
 /** Free-air surface temperature rise by the IEC 60287-2-1 2.2.1 iteration. */
 function airSurfaceRise(m: Model, dTheta: number, lambda1: number) {
   const { h = 0, De_m = 0, sigma = 0, H = 0 } = m.ext;
   const L = 1 + lambda1 + lambda2;
-  const KA = ((Math.PI * De_m * h) / L) * (m.T1 / n + T2 * (1 + lambda1) + m.T3 * L);
+  // n here is the number of cores of the cable (3 for a three-core cable)
+  const KA = ((Math.PI * De_m * h) / L) * (m.T1 / m.mult + T2 * (1 + lambda1) + m.T3 * L);
   const dThetaD = m.Wd * ((1 / L - 0.5) * m.T1 - (n * lambda2 * T2) / L);
   const dThetaDS = (sigma * H * KA) / (Math.PI * h);
   const rhs = dTheta + dThetaD + dThetaDS;
@@ -468,14 +597,19 @@ interface RatingState {
 
 const ZERO3 = [0, 0, 0];
 
+/**
+ * T4 parts as IEC 60287 states them: per cable (three-core cable), or per W/m of the heat in
+ * a shared conduit. Internally they are scaled by m.share to work with the heat of one position.
+ */
 function ductBreakdown(m: Model, T4p: number, gov: number, thetaM: number, mutual: number): T4Breakdown {
+  const k = m.share;
   return {
-    T4: T4p + m.ext.perCable[gov],
-    T4p,
+    T4: (T4p + m.ext.perCable[gov]) / k,
+    T4p: T4p / k,
     T4pp: m.ext.T4pp,
-    T4ppp: m.ext.perCable[gov] - (m.ext.T4pp ?? 0),
+    T4ppp: (m.ext.perCable[gov] - k * (m.ext.T4pp ?? 0)) / k,
     bankCorrection: m.ext.bankCorrection,
-    thetaM,
+    thetaM: m.ext.sharedThetaM ?? thetaM,
     mutual,
     method: m.ext.method,
     hottest: gov,
@@ -504,18 +638,18 @@ function rateCase(m: Model, soil: SoilCase, B: number[] = ZERO3): RatingState | 
     if (m.ext.kind === 'air') {
       const air = airSurfaceRise(m, dTheta, l1);
       const extra = -(m.ext.sigma ?? 0) * (m.ext.De_m ?? 0) * (m.ext.H ?? 0) * air.T4;
-      I = ratingEquation(dTheta, R, m.Wd, m.T1, m.T3, air.T4, l1, 1, extra);
+      I = ratingEquation(dTheta, R, m.Wd, m.T1, T3e(m), air.T4 * m.mult, l1, 1, extra);
       t4 = { T4: air.T4, h: m.ext.h, dThetaS: air.dThetaS, method: m.ext.method, hottest: m.ext.hottest };
     } else {
-      if (m.ext.kind === 'ducts') T4p = ductAirT4(m.ext.U!, m.ext.V!, m.ext.Y!, thetaM, m.geometry.De);
+      T4p = airT4(m, thetaM);
       let gov = -1;
       I = Infinity;
       for (let p = 0; p < 3; p++) {
         const T4 = T4p + m.ext.perCable[p];
         const Ip =
           soil === 'two-zone'
-            ? ratingEquation(dTheta - B[p], R, m.Wd, m.T1, m.T3, T4, l1, m.v, (m.v - 1) * m.dThetaX)
-            : ratingEquation(dTheta - B[p], R, m.Wd, m.T1, m.T3, T4, l1);
+            ? ratingEquation(dTheta - B[p], R, m.Wd, m.T1, T3e(m), T4, l1, m.v, (m.v - 1) * m.dThetaX)
+            : ratingEquation(dTheta - B[p], R, m.Wd, m.T1, T3e(m), T4, l1);
         if (!Number.isFinite(Ip)) {
           I = NaN;
           break;
@@ -529,7 +663,7 @@ function rateCase(m: Model, soil: SoilCase, B: number[] = ZERO3): RatingState | 
         t4 =
           m.ext.kind === 'ducts'
             ? ductBreakdown(m, T4p, gov, thetaM, B[gov])
-            : { T4: m.ext.perCable[gov], mutual: B[gov], method: m.ext.method, hottest: gov };
+            : { T4: m.ext.perCable[gov] / m.share, mutual: B[gov], method: m.ext.method, hottest: gov };
     }
     if (!Number.isFinite(I))
       return B.some((b) => b > 0)
@@ -540,7 +674,7 @@ function rateCase(m: Model, soil: SoilCase, B: number[] = ZERO3): RatingState | 
     const nextThetaS = m.thetaMax - (Wc + 0.5 * m.Wd) * m.T1;
     let nextThetaM = thetaM;
     if (m.ext.kind === 'ducts') {
-      const surface = nextThetaS - n * W * m.T3;
+      const surface = nextThetaS - n * W * T3e(m);
       nextThetaM = surface - 0.5 * n * W * T4p;
     }
     const done = Math.abs(nextThetaS - thetaS) < 1e-9 && Math.abs(nextThetaM - thetaM) < 1e-9;
@@ -564,14 +698,14 @@ function circuitState(m: Model, I: number, thetaAssumed: number, B: number[] = Z
   const sheath = m.sheathAt(thetaS, R);
   const l1 = sheath.lambda1;
   const W = Wc * (1 + l1) + m.Wd;
-  const internal = (Wc + 0.5 * m.Wd) * m.T1 + n * (Wc * (1 + l1) + m.Wd) * T2 + n * W * m.T3;
+  const internal = (Wc + 0.5 * m.Wd) * m.T1 + n * (Wc * (1 + l1) + m.Wd) * T2 + n * W * T3e(m);
   let T4p = 0;
   let thetaM = m.thetaA + 10;
   let hottest = 0;
   let ext = 0;
   let extMoistMax = 0;
   for (let k = 0; k < 200; k++) {
-    if (m.ext.kind === 'ducts') T4p = ductAirT4(m.ext.U!, m.ext.V!, m.ext.Y!, thetaM, m.geometry.De);
+    T4p = airT4(m, thetaM);
     ext = -Infinity;
     for (let p = 0; p < 3; p++) {
       const e = n * W * (T4p + m.ext.perCable[p]) + B[p];
@@ -589,7 +723,7 @@ function circuitState(m: Model, I: number, thetaAssumed: number, B: number[] = Z
   const t4: T4Breakdown =
     m.ext.kind === 'ducts'
       ? ductBreakdown(m, T4p, hottest, thetaM, B[hottest])
-      : { T4: m.ext.perCable[hottest], mutual: B[hottest], method: m.ext.method, hottest };
+      : { T4: m.ext.perCable[hottest] / m.share, mutual: B[hottest], method: m.ext.method, hottest };
   return {
     I,
     R,
@@ -620,18 +754,18 @@ function temperatureAt(m: Model, I: number, soil: SoilCase, B: number[] = ZERO3)
     const thetaS = thetaC - thetaSRel;
     const l1 = m.sheathAt(thetaS, R).lambda1;
     const W = Wc * (1 + l1) + m.Wd;
-    const internal = thetaSRel + n * (Wc * (1 + l1) + m.Wd) * T2 + n * W * m.T3;
+    const internal = thetaSRel + n * (Wc * (1 + l1) + m.Wd) * T2 + n * W * T3e(m);
     let ext: number;
     let extMoist: number;
     if (m.ext.kind === 'air') {
       const { h = 0, De_m = 0, sigma = 0, H = 0 } = m.ext;
-      ext = ((n * W + sigma * De_m * H) / (Math.PI * De_m * h)) ** 0.8;
+      ext = ((m.mult * W + sigma * De_m * H) / (Math.PI * De_m * h)) ** 0.8;
       extMoist = ext;
     } else {
       let T4p = 0;
       extMoist = 0;
       for (let k = 0; k < 200; k++) {
-        if (m.ext.kind === 'ducts') T4p = ductAirT4(m.ext.U!, m.ext.V!, m.ext.Y!, thetaM, m.geometry.De);
+        T4p = airT4(m, thetaM);
         extMoist = Math.max(...[0, 1, 2].map((p) => n * W * (T4p + m.ext.perCable[p]) + B[p]));
         if (m.ext.kind !== 'ducts') break;
         const next = m.thetaA + extMoist - 0.5 * n * W * T4p;
@@ -667,11 +801,66 @@ function temperatureAt(m: Model, I: number, soil: SoilCase, B: number[] = ZERO3)
 export function hasOtherCircuits(inst: InstallationSpec): boolean {
   return (
     inst.type !== 'air' &&
-    ((Array.isArray(inst.circuits) && inst.circuits.length > 0) || (Array.isArray(inst.heatSources) && inst.heatSources.length > 0))
+    ((Array.isArray(inst.circuits) && inst.circuits.length > 0) ||
+      (Array.isArray(inst.heatSources) && inst.heatSources.length > 0) ||
+      !!conduitOf(inst, inst.mainConduit))
   );
 }
 
-function circuitInstallation(inst: InstallationSpec, c: CircuitSpec | null): InstallationSpec {
+/** The shared conduit with this id, if the installation has it. */
+function conduitOf(inst: InstallationSpec, id: string | undefined) {
+  if (!id || inst.type === 'air') return undefined;
+  return (inst.conduits ?? []).find((k) => k.id === id);
+}
+
+/** The cables lying in a shared conduit: count (a three-core cable is one) and mean diameter. */
+function conduitGroup(mainCable: CableSpec, inst: InstallationSpec, id: string) {
+  const members: CableSpec[] = [];
+  if (inst.mainConduit === id) members.push(mainCable);
+  (inst.circuits ?? []).forEach((c) => {
+    if (c.conduit === id) members.push(c.cable ?? mainCable);
+  });
+  let count = 0;
+  let sum = 0;
+  members.forEach((cab) => {
+    const g = deriveGeometry(cab).geometry;
+    const k = g.cores === 3 ? 1 : 3;
+    count += k;
+    sum += k * g.De;
+  });
+  return { count, De: count ? sum / count : NaN };
+}
+
+/** Places each circuit at its conduit, if it has one. */
+function withConduit(inst: InstallationSpec, c: CircuitSpec | null, mainCable: CableSpec, base: InstallationSpec): InstallationSpec {
+  const k = conduitOf(inst, c ? c.conduit : inst.mainConduit);
+  if (!k) return base;
+  const grp = conduitGroup(mainCable, inst, k.id);
+  return {
+    ...base,
+    type: base.type === 'ductbank' ? 'ductbank' : 'ducts',
+    depth_m: k.depth_m,
+    circuitX_m: k.x_m,
+    conduitRef: {
+      id: k.id,
+      name: k.name || 'Conduit',
+      x_m: k.x_m,
+      depth_m: k.depth_m,
+      material: k.material,
+      innerD_mm: k.innerD_mm,
+      outerD_mm: k.outerD_mm,
+      groupCables: grp.count,
+      groupDe: grp.De,
+    },
+  };
+}
+
+function circuitInstallation(inst: InstallationSpec, c: CircuitSpec | null, mainCable?: CableSpec): InstallationSpec {
+  const out = circuitInstallationBase(inst, c);
+  return mainCable ? withConduit(inst, c, mainCable, out) : out;
+}
+
+function circuitInstallationBase(inst: InstallationSpec, c: CircuitSpec | null): InstallationSpec {
   const bank = { ...inst.bank, centreDepth_m: pick(inst.bank.centreDepth_m, inst.depth_m) };
   if (!c) return { ...inst, bank, soilModel: 'moist', circuitX_m: inst.mainX_m ?? 0, circuits: [] };
   // Each circuit may be direct or in its own ducts (buried, not in a duct bank)
@@ -714,12 +903,21 @@ interface SystemSolution {
   iterations: number;
 }
 
+/** True when two circuits lie in the same shared conduit. */
+const sameConduit = (a: Model, b: Model) => !!a.conduit && a.conduit.id === b.conduit?.id;
+
 function couplingRises(circs: SysCircuit[], W: number[], F?: number[][], Bsrc?: number[][]): number[][] {
   return circs.map((c, ci) =>
     c.m.positions.map((p, pi) => {
       let sum = Bsrc ? Bsrc[ci][pi] : 0;
       circs.forEach((o, oi) => {
         if (oi === ci) return;
+        if (sameConduit(c.m, o.m)) {
+          // Heat of another circuit in the same conduit crosses the conduit's air gap, wall and ground
+          const unit = (c.m.ext.sharedAir ?? 0) / 3 + c.m.ext.perCable[pi] / 3;
+          sum += 3 * W[oi] * unit;
+          return;
+        }
         o.m.positions.forEach((q, qi) => {
           sum += W[oi] * (F ? F[ci * 3 + pi][oi * 3 + qi] : mutualHeatingFactor(c.m.ext.couplingRho, p, q) + c.m.ext.bankUnit);
         });
@@ -729,12 +927,54 @@ function couplingRises(circs: SysCircuit[], W: number[], F?: number[][], Bsrc?: 
   );
 }
 
+/** Circuits grouped by shared conduit, only conduits holding two or more circuits. */
+function sharedGroups(circs: SysCircuit[]): number[][] {
+  const by = new Map<string, number[]>();
+  circs.forEach((c, i) => {
+    if (!c.m.conduit) return;
+    const list = by.get(c.m.conduit.id) ?? [];
+    list.push(i);
+    by.set(c.m.conduit.id, list);
+  });
+  return [...by.values()].filter((g) => g.length > 1);
+}
+
+/**
+ * Air gap T4′ of each shared conduit, at the mean air temperature that the heat of all its
+ * cables gives (IEC 60287-2-1 4.2.7.1 with the group's equivalent diameter).
+ */
+function updateSharedAir(circs: SysCircuit[], groups: number[][], W?: number[], B?: number[][]) {
+  for (const g of groups) {
+    const m0 = circs[g[0]].m;
+    const unit = m0.ext.perCable[0] / 3;
+    const air = (thetaM: number) => ductAirT4(m0.ext.U!, m0.ext.V!, m0.ext.Y!, thetaM, m0.ext.airDe ?? m0.geometry.De);
+    let T4a = (m0.ext.sharedAir ?? 3 * air(m0.thetaA + 0.5 * (m0.thetaMax - m0.thetaA))) / 3;
+    let thetaM = m0.thetaA + 0.5 * (m0.thetaMax - m0.thetaA);
+    if (W && B) {
+      const Q = g.reduce((a, i) => a + 3 * W[i], 0);
+      const fromMembers = g.slice(1).reduce((a, i) => a + 3 * W[i] * (T4a + unit), 0);
+      const outside = B[g[0]][0] - fromMembers;
+      for (let k = 0; k < 100; k++) {
+        thetaM = m0.thetaA + outside + Q * unit + 0.5 * Q * T4a;
+        const next = air(thetaM);
+        const done = Math.abs(next - T4a) < 1e-13;
+        T4a = next;
+        if (done) break;
+      }
+    } else T4a = air(thetaM);
+    g.forEach((i) => {
+      circs[i].m.ext.sharedAir = 3 * T4a;
+      circs[i].m.ext.sharedThetaM = thetaM;
+    });
+  }
+}
+
 /** Replaces the external thermal resistances of each circuit with those of a numerical model. */
 function applyNumeric(models: Model[], F: number[][]) {
   models.forEach((m, ci) => {
     if (m.ext.kind === 'air') return;
     const o = ci * 3;
-    const per = [0, 1, 2].map((p) => (m.ext.T4pp ?? 0) + F[o + p][o] + F[o + p][o + 1] + F[o + p][o + 2]);
+    const per = [0, 1, 2].map((p) => m.share * (m.ext.T4pp ?? 0) + F[o + p][o] + F[o + p][o + 1] + F[o + p][o + 2]);
     let hottest = 0;
     per.forEach((v, i) => {
       if (v > per[hottest]) hottest = i;
@@ -769,14 +1009,14 @@ function solveSystem(
       name: mainName,
       cableName: cable.name,
       load: mainCurrent === undefined ? 'rated' : 'fixed',
-      m: buildModel(cable, circuitInstallation(inst, null)),
+      m: buildModel(cable, circuitInstallation(inst, null, cable)),
       I: mainCurrent ?? 0,
       theta: cable.maxTemp_C,
     },
   ];
   inst.circuits.forEach((c, i) => {
     const cab = c.cable ?? cable;
-    const m = buildModel(cab, circuitInstallation(inst, c));
+    const m = buildModel(cab, circuitInstallation(inst, c, cable));
     const name = c.name || `C${i + 2}`;
     m.errors.forEach((e) => errors.push(`${name}: ${e}`));
     m.warnings.forEach((w) => warnings.push(`${name}: ${w}`));
@@ -796,6 +1036,7 @@ function solveSystem(
     for (let b = a + 1; b < circs.length; b++) {
       const ca = circs[a];
       const cb = circs[b];
+      if (sameConduit(ca.m, cb.m)) continue;
       const clash = ca.m.positions.some((p) =>
         cb.m.positions.some((q) => Math.hypot(p.x - q.x, p.y - q.y) < (ca.m.objectD + cb.m.objectD) / 2 - 1e-6),
       );
@@ -826,6 +1067,10 @@ function solveSystem(
     applyNumeric(circs.map((c) => c.m), F);
   }
 
+  // Circuits sharing a conduit
+  const groups = sharedGroups(circs);
+  updateSharedAir(circs, groups);
+
   // Start: rated circuits at their stand-alone rating.
   for (const c of circs) {
     if (c.load !== 'rated') continue;
@@ -840,6 +1085,10 @@ function solveSystem(
   for (it = 1; it <= 2000; it++) {
     const W = circs.map((c) => circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta).W);
     B = couplingRises(circs, W, F, Bsrc);
+    if (groups.length) {
+      updateSharedAir(circs, groups, W, B);
+      B = couplingRises(circs, W, F, Bsrc);
+    }
     let change = 0;
     const newI = circs.map((c) => c.I);
     const rated = circs.map((c, i) => ({ c, i })).filter(({ c }) => c.load === 'rated');
@@ -879,11 +1128,44 @@ function solveSystem(
   return { errors, warnings, circuits: circs, B, iterations: it };
 }
 
+/**
+ * Where each circuit's cables are drawn: one point per cable (a three-core cable is one),
+ * cables in a shared conduit resting along its bottom.
+ */
+function cableLayout(models: Model[]): { cablePositions: Point[]; conduit?: CircuitResult['conduit'] }[] {
+  const out = models.map((m) => ({
+    cablePositions: m.geometry.cores === 3 && !m.conduit ? [m.positions[0]] : m.positions,
+    conduit: undefined as CircuitResult['conduit'],
+  }));
+  const by = new Map<string, number[]>();
+  models.forEach((m, i) => {
+    if (!m.conduit) return;
+    by.set(m.conduit.id, [...(by.get(m.conduit.id) ?? []), i]);
+  });
+  for (const idx of by.values()) {
+    const k = models[idx[0]].conduit!;
+    const placed = arrangeInConduit(
+      k.x,
+      k.y,
+      k.Di,
+      idx.map((i) => ({ De: models[i].geometry.De, cores: models[i].geometry.cores })),
+    );
+    idx.forEach((i, j) => {
+      out[i].cablePositions = placed[j];
+      out[i].conduit = { id: k.id, name: k.name, x: k.x, y: k.y, Do: k.Do, Di: k.Di };
+    });
+  }
+  return out;
+}
+
 function circuitResults(sol: SystemSolution): CircuitResult[] {
+  const layout = cableLayout(sol.circuits.map((c) => c.m));
   return sol.circuits.map((c, i) => {
     const st = circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta, sol.B[i]);
-    const inDucts = c.m.inst.type === 'ducts' || c.m.inst.type === 'ductbank';
+    const inDucts = !c.m.conduit && (c.m.inst.type === 'ducts' || c.m.inst.type === 'ductbank');
     return {
+      ...layout[i],
+      cores: c.m.geometry.cores,
       name: c.name,
       cableName: c.cableName,
       load: c.load,
@@ -921,7 +1203,7 @@ function failResult(m: Model, errors: string[], warnings: string[], notes: strin
     conductor: m.conductorAt(m.thetaMax),
     dielectric: { C: m.C, Wd: m.Wd, included: m.wdIncluded, threshold_kV: m.wdThreshold },
     sheath: m.sheathAt(m.thetaMax, m.conductorAt(m.thetaMax).R),
-    thermal: { T1: m.T1, T2, T3: m.T3, t4: { T4: NaN, method: '', hottest: 0 } },
+    thermal: { T1: m.T1, T2, T3: m.T3, t4: { T4: NaN, method: '', hottest: 0 }, threeCore: m.t1Info },
     losses: { Wc: NaN, Ws: NaN, Wd: m.Wd, W: NaN },
     temperatures: { conductor: NaN, sheath: NaN, surface: NaN },
     iterations: 0,
@@ -942,9 +1224,9 @@ function assemble(
   const l1 = chosen.sheath.lambda1;
   const W = n * (Wc * (1 + l1 + lambda2) + m.Wd);
   const sheathTemp = conductorTemp - (Wc + 0.5 * m.Wd) * m.T1;
-  const surface = sheathTemp - n * W * m.T3;
+  const surface = sheathTemp - n * W * T3e(m);
   const temperatures: RatingResult['temperatures'] = { conductor: conductorTemp, sheath: sheathTemp, surface };
-  if (chosen.t4.T4p !== undefined) temperatures.ductInner = surface - W * chosen.t4.T4p;
+  if (chosen.t4.T4p !== undefined) temperatures.ductInner = surface - W * m.share * chosen.t4.T4p;
 
   const c = chosen.conductor;
   if (c.xs > 2.8)
@@ -968,7 +1250,7 @@ function assemble(
     conductor: c,
     dielectric: { C: m.C, Wd: m.Wd, included: m.wdIncluded, threshold_kV: m.wdThreshold },
     sheath: chosen.sheath,
-    thermal: { T1: m.T1, T2, T3: m.T3, t4: chosen.t4 },
+    thermal: { T1: m.T1, T2, T3: m.T3, t4: chosen.t4, threeCore: m.t1Info },
     losses: { Wc, Ws: Wc * l1, Wd: m.Wd, W },
     temperatures,
     iterations: chosen.iterations,
@@ -1065,7 +1347,7 @@ function calculateSystemRating(cable: CableSpec, inst: InstallationSpec, opts: R
   result.field = opts.numericF
     ? undefined
     : makeField(m, [
-        ...circuits.map((c) => ({ positions: c.positions, W: c.W, r: (c.ductD ?? c.De) / 2 })),
+        ...circuits.map((c) => ({ positions: c.positions, W: c.W, r: (c.conduit?.Do ?? c.ductD ?? c.De) / 2 })),
         ...(inst.heatSources ?? []).map((h) => ({ positions: [{ x: h.x_m * 1000, y: h.depth_m * 1000 }], W: h.W, r: h.diameter_mm / 2 })),
       ]);
   return result;
@@ -1074,11 +1356,16 @@ function calculateSystemRating(cable: CableSpec, inst: InstallationSpec, opts: R
 /** Where one circuit's cables lie and how big they are, without rating it. */
 export interface CircuitLayout {
   name: string;
+  /** Positions used by the thermal model (mm); three per circuit */
   positions: { x: number; y: number }[];
+  /** One point per cable, for drawing */
+  cablePositions: { x: number; y: number }[];
   /** Cable and duct outer diameters (mm) */
   De: number;
   ductD?: number;
   ductInnerD?: number;
+  cores: 1 | 3;
+  conduit?: CircuitResult['conduit'];
   geometry: CableGeometry;
 }
 
@@ -1088,38 +1375,63 @@ export interface CircuitLayout {
  * because two circuits overlap), so the drawing stays available to fix it.
  */
 export function layoutCircuits(cable: CableSpec, inst: InstallationSpec): CircuitLayout[] {
+  inst = placeInConduits(inst);
   const base = inst.type === 'trench' ? trenchToIec(inst).iec : inst;
   const list: { name: string; cable: CableSpec; ci: InstallationSpec }[] = [
-    { name: 'C1', cable, ci: circuitInstallation(base, null) },
+    { name: 'C1', cable, ci: circuitInstallation(base, null, cable) },
   ];
   if (base.type !== 'air')
     (base.circuits ?? []).forEach((c, i) =>
-      list.push({ name: c.name || `C${i + 2}`, cable: c.cable ?? cable, ci: circuitInstallation(base, c) }),
+      list.push({ name: c.name || `C${i + 2}`, cable: c.cable ?? cable, ci: circuitInstallation(base, c, cable) }),
     );
-  const out: CircuitLayout[] = [];
+  const models: { name: string; m: Model }[] = [];
   for (const { name, cable: cab, ci } of list) {
     try {
       const m = buildModel(cab, ci);
-      const inDucts = ci.type === 'ducts' || ci.type === 'ductbank';
-      const positions = m.positions.filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
-      if (positions.length !== 3 || !(m.geometry.De > 0)) continue;
-      out.push({
-        name,
-        positions,
-        De: m.geometry.De,
-        ductD: inDucts && ci.duct.outerD_mm > 0 ? ci.duct.outerD_mm : undefined,
-        ductInnerD: inDucts && ci.duct.innerD_mm > 0 ? ci.duct.innerD_mm : undefined,
-        geometry: m.geometry,
-      });
+      if (m.positions.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y)) || !(m.geometry.De > 0)) continue;
+      models.push({ name, m });
     } catch {
       // Inputs too incomplete to place this circuit
     }
   }
-  return out;
+  const layout = cableLayout(models.map((x) => x.m));
+  return models.map(({ name, m }, i) => {
+    const inDucts = !m.conduit && (m.inst.type === 'ducts' || m.inst.type === 'ductbank');
+    return {
+      name,
+      positions: m.positions,
+      cablePositions: layout[i].cablePositions,
+      conduit: layout[i].conduit,
+      De: m.geometry.De,
+      ductD: inDucts && m.inst.duct.outerD_mm > 0 ? m.inst.duct.outerD_mm : undefined,
+      ductInnerD: inDucts && m.inst.duct.innerD_mm > 0 ? m.inst.duct.innerD_mm : undefined,
+      cores: m.geometry.cores,
+      geometry: m.geometry,
+    };
+  });
+}
+
+/** Puts every circuit that lies in a shared conduit at the conduit's position. */
+export function placeInConduits(inst: InstallationSpec): InstallationSpec {
+  const ks = inst.conduits ?? [];
+  if (!ks.length || inst.type === 'air') return inst;
+  const at = (id?: string) => (id ? ks.find((k) => k.id === id) : undefined);
+  const main = at(inst.mainConduit);
+  const moved = inst.circuits.some((c) => at(c.conduit));
+  if (!main && !moved) return inst;
+  return {
+    ...inst,
+    ...(main ? { mainX_m: main.x_m, depth_m: main.depth_m } : {}),
+    circuits: inst.circuits.map((c) => {
+      const k = at(c.conduit);
+      return k ? { ...c, x_m: k.x_m, depth_m: k.depth_m } : c;
+    }),
+  };
 }
 
 /** Permissible continuous current of the main circuit (100 % load factor). */
 export function calculateRating(cable: CableSpec, inst: InstallationSpec, opts: RatingOptions = {}): RatingResult {
+  inst = placeInConduits(inst);
   // Heat sources belong to the cross-section layout
   if (inst.type !== 'trench' && !inst.fromLayout && inst.heatSources?.length) inst = { ...inst, heatSources: [] };
   if (inst.type === 'trench') {
@@ -1208,6 +1520,7 @@ export function calculateTemperature(
   I: number,
   opts: RatingOptions = {},
 ): TemperatureResult {
+  inst = placeInConduits(inst);
   if (inst.type === 'trench') return calculateTemperature(cable, trenchToIec(inst).iec, I, opts);
   if (!inst.fromLayout && inst.heatSources?.length) inst = { ...inst, heatSources: [] };
   const empty = (errors: string[]): TemperatureResult => ({

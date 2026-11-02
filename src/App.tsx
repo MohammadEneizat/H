@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   calculateRating,
+  DUCTS,
   migrateTrench,
   type CableSpec,
   type CircuitSpec,
@@ -58,6 +59,7 @@ function normalizeCircuit(c: Partial<CircuitSpec>, i: number): CircuitSpec {
     ducted: typeof c.ducted === 'boolean' ? c.ducted : undefined,
     duct: c.duct && typeof c.duct === 'object' ? c.duct : undefined,
     rotated: !!c.rotated,
+    conduit: typeof c.conduit === 'string' ? c.conduit : undefined,
   };
 }
 
@@ -86,6 +88,20 @@ function normalizeInst(i: Partial<InstallationSpec> | undefined): InstallationSp
           }))
       : [],
     rotated: !!i.rotated,
+    conduits: Array.isArray(i.conduits)
+      ? i.conduits
+          .filter((k) => k && typeof k === 'object' && typeof k.id === 'string')
+          .map((k, n) => ({
+            id: k.id,
+            name: typeof k.name === 'string' ? k.name : `Conduit ${n + 1}`,
+            x_m: Number(k.x_m) || 0,
+            depth_m: Number(k.depth_m) || 1,
+            material: k.material in DUCTS ? k.material : 'PE',
+            innerD_mm: Number(k.innerD_mm) || 141,
+            outerD_mm: Number(k.outerD_mm) || 160,
+          }))
+      : [],
+    mainConduit: typeof i.mainConduit === 'string' ? i.mainConduit : undefined,
   };
 }
 

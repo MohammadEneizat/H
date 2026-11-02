@@ -500,6 +500,36 @@ export const TRENCH_TEMPLATES: TrenchTemplate[] = [
       },
     }),
   },
+  {
+    id: 'lv-conduit',
+    label: 'LV: two circuits in one DN160 conduit, 2 m deep',
+    description:
+      'Two three-core LV cables (load an NA2XY 3×240 cable from the Library) sharing a PE conduit 160/141 mm at 2 m in soil of 1 K·m/W. C2 carries 254 A; C1 is rated.',
+    apply: (inst) => {
+      const k = { id: uid(), name: 'DN160', x_m: 0, depth_m: 2, material: 'PE' as const, innerD_mm: 141, outerD_mm: 160 };
+      return {
+        ...inst,
+        type: 'trench',
+        formation: 'trefoil',
+        touching: true,
+        rotated: false,
+        depth_m: 2,
+        mainX_m: 0,
+        soilRho: 1,
+        conduits: [k],
+        mainConduit: k.id,
+        circuits: [circuit({ name: 'C2', x_m: 0, depth_m: 2, conduit: k.id, load: 'fixed', current_A: 254 })],
+        heatSources: [],
+        trench: {
+          surface: 'grass',
+          ducted: false,
+          layers: [layer('Native soil', 'clay', 5, 1)],
+          shapes: [],
+          slabs: [],
+        },
+      };
+    },
+  },
 ];
 
 /** A plain cross-section to start from: the current circuit in a sand-bedded trench. */

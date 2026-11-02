@@ -50,9 +50,93 @@ export interface LayerInfo {
   rOut: number;
 }
 
+/** Core colours of a three-core cable (HD 308: brown, black, grey). */
+export const CORE_COLOURS: [string, string][] = [
+  ['#8b5a36', '#6a4227'],
+  ['#34383c', '#202326'],
+  ['#9aa1a8', '#7c838a'],
+];
+
+const unit = (a: number) => ({ x: Math.cos(a), y: Math.sin(a) });
+
+/** Path of a 120° sector of radius R whose straight sides lie d inside the dividing lines, centred on angle phi. */
+function sectorPath(R: number, d: number, phi: number, cx = 0, cy = 0): string {
+  const half = Math.PI / 3;
+  const s = Math.sqrt(Math.max(0, R * R - d * d));
+  const ua = unit(phi - half);
+  const na = unit(phi - half + Math.PI / 2);
+  const ub = unit(phi + half);
+  const nb = unit(phi + half - Math.PI / 2);
+  const v = unit(phi);
+  const vd = d / Math.sin(half);
+  const P = (u: { x: number; y: number }, n: { x: number; y: number }) => ({ x: cx + s * u.x + d * n.x, y: cy + s * u.y + d * n.y });
+  const A = P(ua, na);
+  const B = P(ub, nb);
+  const f = (n: number) => n.toFixed(3);
+  return `M${f(cx + vd * v.x)} ${f(cy + vd * v.y)}L${f(A.x)} ${f(A.y)}A${f(R)} ${f(R)} 0 0 1 ${f(B.x)} ${f(B.y)}Z`;
+}
+
+export interface CorePart {
+  /** Insulated core outline and conductor outline (SVG paths, mm, around the cable centre) */
+  ins: string;
+  cond: string;
+  /** Centre of the conductor (for strands and the callout) */
+  cx: number;
+  cy: number;
+  round: boolean;
+  /** Round conductors: radii */
+  rc?: number;
+  ri?: number;
+}
+
+/** The three cores of a three-core cable, the first centred on angle rot (rad). */
+export function threeCoreParts(g: CableGeometry, rot = -Math.PI / 2, cx = 0, cy = 0): CorePart[] {
+  const tc = g.threeCore!;
+  const tIns = tc.t / 2;
+  return [0, 1, 2].map((k) => {
+    const phi = rot + (2 * Math.PI * k) / 3;
+    if (tc.shape === 'round') {
+      const c = (g.dc + tc.t) / Math.sqrt(3);
+      const x = cx + c * Math.cos(phi);
+      const y = cy + c * Math.sin(phi);
+      const rc = g.dc / 2;
+      const ri = rc + tIns;
+      const circ = (r: number) => `M${x - r} ${y}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0Z`;
+      return { ins: circ(ri), cond: circ(rc), cx: x, cy: y, round: true, rc, ri };
+    }
+    const mid = tc.r1 * 0.55;
+    return {
+      ins: sectorPath(tc.r1 + tIns, 0.0001, phi, cx, cy),
+      cond: sectorPath(tc.r1, tIns, phi, cx, cy),
+      cx: cx + mid * Math.cos(phi),
+      cy: cy + mid * Math.sin(phi),
+      round: false,
+    };
+  });
+}
+
 /** The layers of the cable, inside out, for the callouts and the report. */
 export function cableLayers(cable: CableSpec, g: CableGeometry): LayerInfo[] {
   const out: LayerInfo[] = [];
+  if (g.cores === 3 && g.threeCore) {
+    const tc = g.threeCore;
+    const c = cable.conductor;
+    const tIns = tc.t / 2;
+    const shape = `${tc.shape === 'sector' ? 'sector-shaped' : 'round'} ${c.construction === 'solid' ? 'solid' : 'stranded'}`;
+    const ins = INSULATIONS[cable.insulation.material].label.split(',')[0].replace(/ \(.*\)/, '');
+    out.push({ n: 1, name: 'Conductors', detail: `3 × ${c.area_mm2} mm² ${METALS[c.material].label.toLowerCase()}, ${shape}`, rIn: 0, rOut: tc.r1 });
+    out.push({ n: 2, name: 'Core insulation', detail: `${ins}, ${fmt(tIns, 1)} mm; brown, black, grey`, rIn: tc.r1, rOut: tc.r1 + tIns });
+    if (tc.innerCovering > 0.05)
+      out.push({ n: 3, name: 'Inner covering', detail: `Extruded filler, ${fmt(tc.innerCovering, 1)} mm, ⌀ ${fmt(tc.da, 1)} mm`, rIn: tc.layD / 2, rOut: tc.da / 2 });
+    out.push({
+      n: out.length + 1,
+      name: 'Oversheath',
+      detail: `${JACKETS[cable.jacket.material].label.split(',')[0]}, ${fmt(cable.jacket.thickness_mm, 1)} mm, ⌀ ${fmt(g.De, 1)} mm`,
+      rIn: tc.da / 2,
+      rOut: Math.max(g.De, g.DeBuilt) / 2,
+    });
+    return out;
+  }
   const push = (name: string, detail: string, dIn: number, dOut: number) => {
     if (dOut > dIn + 1e-9) out.push({ n: out.length + 1, name, detail, rIn: dIn / 2, rOut: dOut / 2 });
   };
@@ -76,7 +160,7 @@ export function cableLayers(cable: CableSpec, g: CableGeometry): LayerInfo[] {
     push('Metallic screen', `${metal} wires ${count}⌀ ${fmt(s.thickness_mm, 2)} mm, ${fmt(g.As, 1)} mm²`, g.Dunder, g.Ds);
   } else if (s.form === 'smooth') {
     push('Metallic sheath', `${metal}, ${fmt(s.thickness_mm, 2)} mm, ${fmt(g.As, 0)} mm²`, g.Dunder, g.Ds);
-  } else {
+  } else if (s.form === 'corrugated') {
     push('Corrugated sheath', `${metal}, ${fmt(s.thickness_mm, 2)} mm, ⌀ ${fmt(g.Doc, 1)} mm over crests`, g.Dunder, g.Ds);
   }
   push(
@@ -103,6 +187,129 @@ function strands(area: number, dc: number) {
   return { pts, ds };
 }
 
+/** Numbered callouts from each layer to a balloon on the right of the drawing. */
+function Callouts({ layers, k, pal }: { layers: LayerInfo[]; k: number; pal: Palette }) {
+  const angles = layers.map((_, i) => ((-64 + (128 * i) / Math.max(1, layers.length - 1)) * Math.PI) / 180);
+  const rBalloon = 106;
+  return (
+    <>
+      {layers.map((l, i) => {
+        const a = angles[i];
+        const rm = ((l.rIn + l.rOut) / 2) * k;
+        const sx = rm * Math.cos(a);
+        const sy = rm * Math.sin(a);
+        const bx = rBalloon * Math.cos(a);
+        const by = rBalloon * Math.sin(a);
+        const ex = (rBalloon - 7) * Math.cos(a);
+        const ey = (rBalloon - 7) * Math.sin(a);
+        return (
+          <g key={l.n}>
+            <line x1={sx} y1={sy} x2={ex} y2={ey} stroke={pal.halo} strokeWidth={1.8} strokeLinecap="round" />
+            <line x1={sx} y1={sy} x2={ex} y2={ey} stroke={pal.ink} strokeWidth={0.6} strokeLinecap="round" />
+            <circle cx={sx} cy={sy} r={1.3} fill={pal.halo} stroke={pal.ink} strokeWidth={0.6} />
+            <circle cx={bx} cy={by} r={7} fill={pal.panel} stroke={pal.ink} strokeWidth={0.7} />
+            <text x={bx} y={by + 0.3} textAnchor="middle" dominantBaseline="middle" fontSize={8} fontWeight={600} fill={pal.ink}>
+              {l.n}
+            </text>
+          </g>
+        );
+      })}
+    </>
+  );
+}
+
+/** Three-core cable without metallic screen: cores in their colours, filler, oversheath. */
+function ThreeCoreSectionSvg({
+  cable,
+  g,
+  pal,
+  idPrefix,
+  callouts,
+}: {
+  cable: CableSpec;
+  g: CableGeometry;
+  pal: Palette;
+  idPrefix: string;
+  callouts: boolean;
+}) {
+  const id = (s: string) => `${idPrefix}-${s}`;
+  const tc = g.threeCore!;
+  const R = Math.max(g.De, g.DeBuilt) / 2;
+  const k = 92 / R;
+  const cond = metalOf(pal, cable.conductor.material);
+  const parts = threeCoreParts(g, (-40 * Math.PI) / 180);
+  const layers = cableLayers(cable, g);
+  const solid = cable.conductor.construction === 'solid';
+  // Wires of a stranded conductor: a hexagonal grid clipped to each conductor
+  const ds = Math.max(1.6, g.dc / 6.2);
+  const wires: { x: number; y: number }[] = [];
+  if (!solid) {
+    const lim = tc.r1 + 2;
+    for (let row = -Math.ceil(lim / (ds * 0.866)); row <= Math.ceil(lim / (ds * 0.866)); row++)
+      for (let col = -Math.ceil(lim / ds) - 1; col <= Math.ceil(lim / ds) + 1; col++)
+        wires.push({ x: col * ds + (row % 2 ? ds / 2 : 0), y: row * ds * 0.866 });
+  }
+  return (
+    <svg xmlns={SVGNS} viewBox="-118 -118 236 236" role="img" aria-label={`Cross-section of ${cable.name}`} fontFamily={FONT}>
+      <defs>
+        <radialGradient id={id('cond')} cx="38%" cy="34%" r="72%">
+          <stop offset="0%" stopColor={cond[0]} />
+          <stop offset="55%" stopColor={cond[1]} />
+          <stop offset="100%" stopColor={cond[2]} />
+        </radialGradient>
+        <radialGradient id={id('strand')} cx="35%" cy="30%" r="75%">
+          <stop offset="0%" stopColor={cond[0]} />
+          <stop offset="60%" stopColor={cond[1]} />
+          <stop offset="100%" stopColor={cond[2]} />
+        </radialGradient>
+        <radialGradient id={id('jacket')} cx="34%" cy="28%" r="80%">
+          <stop offset="0%" stopColor={pal.jacket[0]} />
+          <stop offset="100%" stopColor={pal.jacket[1]} />
+        </radialGradient>
+        {parts.map((p, i) => (
+          <clipPath key={i} id={id(`cc${i}`)}>
+            <path d={p.cond} transform={`scale(${k})`} />
+          </clipPath>
+        ))}
+      </defs>
+      <circle r={R * k} fill={`url(#${id('jacket')})`} stroke={pal.jacketEdge} strokeWidth={0.8} />
+      <circle r={(tc.da / 2) * k} fill={pal.tape} />
+      <g transform={`scale(${k})`}>
+        {parts.map((p, i) => (
+          <path
+            key={`i${i}`}
+            d={p.ins}
+            fill={CORE_COLOURS[i][0]}
+            stroke={CORE_COLOURS[i][1]}
+            strokeWidth={0.35}
+            strokeLinejoin="round"
+          />
+        ))}
+        {parts.map((p, i) => (
+          <path key={`c${i}`} d={p.cond} fill={solid ? `url(#${id('cond')})` : cond[2]} stroke={cond[2]} strokeWidth={0.3} strokeLinejoin="round" />
+        ))}
+      </g>
+      {!solid &&
+        parts.map((p, i) => (
+          <g key={`w${i}`} clipPath={`url(#${id(`cc${i}`)})`}>
+            {wires.map((w, j) => (
+              <circle
+                key={j}
+                cx={(p.cx + w.x) * k}
+                cy={(p.cy + w.y) * k}
+                r={(ds / 2) * k * 1.05}
+                fill={`url(#${id('strand')})`}
+                stroke={cond[2]}
+                strokeWidth={0.25}
+              />
+            ))}
+          </g>
+        ))}
+      {callouts && <Callouts layers={layers} k={k} pal={pal} />}
+    </svg>
+  );
+}
+
 export function CableSectionSvg({
   cable,
   g,
@@ -116,6 +323,8 @@ export function CableSectionSvg({
   idPrefix: string;
   callouts?: boolean;
 }) {
+  if (g.cores === 3 && g.threeCore)
+    return <ThreeCoreSectionSvg cable={cable} g={g} pal={pal} idPrefix={idPrefix} callouts={callouts} />;
   const id = (s: string) => `${idPrefix}-${s}`;
   const R = Math.max(g.De, g.DeBuilt) / 2;
   const k = 92 / R;
@@ -215,8 +424,10 @@ export function CableSectionSvg({
         strokeLinejoin="round"
       />
     );
-  } else {
+  } else if (cable.screen.form === 'smooth') {
     screen = <circle r={(rDs + rUnder) / 2} fill="none" stroke={`url(#${id('sheath')})`} strokeWidth={rDs - rUnder} />;
+  } else {
+    screen = null;
   }
 
   const angles = layers.map((_, i) => ((-64 + (128 * i) / Math.max(1, layers.length - 1)) * Math.PI) / 180);
@@ -384,6 +595,7 @@ export function buildScene(cable: CableSpec, inst: InstallationSpec, result: Rat
     {
       name: 'C1',
       positions: result.positions,
+      cablePositions: g.cores === 3 ? [result.positions[0]] : result.positions,
       De: g.De,
       dc: g.dc,
       ductD: inDucts ? inst.duct.outerD_mm : undefined,
@@ -397,7 +609,7 @@ export function buildScene(cable: CableSpec, inst: InstallationSpec, result: Rat
     const cab = spec?.cable ?? cable;
     return {
       name: c.name.replace(' (main)', ''),
-      positions: c.positions,
+      positions: c.cablePositions,
       geo: i === 0 ? g : deriveGeometry(cab).geometry,
       D: c.ductD ?? c.De,
       hottest: c.hottest,
@@ -554,6 +766,21 @@ export function CableGlyph({
 }) {
   const g = geo;
   const De = Math.max(g.De, g.DeBuilt);
+  if (g.cores === 3 && g.threeCore) {
+    const parts = threeCoreParts(g, -Math.PI / 2, x, y);
+    return (
+      <g>
+        <circle cx={x} cy={y} r={De / 2} fill={`url(#${id('gjacket')})`} stroke={hot ? pal.accent : pal.jacketEdge} strokeWidth={hot ? sw * 3 : sw * 0.8} />
+        <circle cx={x} cy={y} r={g.threeCore.da / 2} fill={pal.tape} />
+        {parts.map((p, i) => (
+          <path key={`i${i}`} d={p.ins} fill={CORE_COLOURS[i][0]} />
+        ))}
+        {parts.map((p, i) => (
+          <path key={`c${i}`} d={p.cond} fill={cond[1]} stroke={cond[2]} strokeWidth={sw * 0.4} strokeLinejoin="round" />
+        ))}
+      </g>
+    );
+  }
   return (
     <g>
       <circle
@@ -564,7 +791,9 @@ export function CableGlyph({
         stroke={hot ? pal.accent : pal.jacketEdge}
         strokeWidth={hot ? sw * 3 : sw * 0.8}
       />
-      <circle cx={x} cy={y} r={(g.Ds + g.Dunder) / 4} fill="none" stroke={metal[1]} strokeWidth={Math.max(sw, (g.Ds - g.Dunder) / 2)} />
+      {g.Ds > g.Dunder && (
+        <circle cx={x} cy={y} r={(g.Ds + g.Dunder) / 4} fill="none" stroke={metal[1]} strokeWidth={Math.max(sw, (g.Ds - g.Dunder) / 2)} />
+      )}
       <circle cx={x} cy={y} r={g.Dis / 2} fill={pal.semicon} />
       <circle cx={x} cy={y} r={g.Di / 2} fill={pal.xlpe[0]} />
       <circle cx={x} cy={y} r={g.dc / 2} fill={cond[1]} stroke={cond[2]} strokeWidth={sw * 0.6} />
@@ -871,7 +1100,7 @@ export function InstallationDetailSvg({
       <CircuitShapes scene={scene} pal={pal} id={id} sw={sw} inst={inst} detailed />
       {scene.many ? (
         scene.groups.map((gr, gi) => {
-          const gx = gr.positions.reduce((a, p) => a + p.x, 0) / 3;
+          const gx = gr.positions.reduce((a, p) => a + p.x, 0) / gr.positions.length;
           const gTop = Math.min(...gr.positions.map((p) => p.y)) - gr.D / 2;
           return (
             <text
@@ -894,6 +1123,7 @@ export function InstallationDetailSvg({
         </text>
       )}
       {!scene.many &&
+        main.positions.length === 3 &&
         main.positions.map((p, i) => {
           const gx = main.positions.reduce((a, q) => a + q.x, 0) / 3;
           const gy = main.positions.reduce((a, q) => a + q.y, 0) / 3;
@@ -945,7 +1175,12 @@ export function AirSvg({
   const g = result.geometry;
   const s = result.spacing_mm;
   const vertical = inst.air.arrangement === 'flat-vertical' || inst.air.arrangement === 'flat-vertical-spaced';
-  const pts = vertical ? [-s, 0, s].map((y) => ({ x: 0, y })) : result.positions.map((p) => ({ x: p.x, y: p.y }));
+  const pts =
+    g.cores === 3
+      ? [{ x: 0, y: 0 }]
+      : vertical
+        ? [-s, 0, s].map((y) => ({ x: 0, y }))
+        : result.positions.map((p) => ({ x: p.x, y: p.y }));
   const span = Math.max(s * 2 + g.De, g.De * 4);
   const fs = span / 13;
   const sw = span / 300;

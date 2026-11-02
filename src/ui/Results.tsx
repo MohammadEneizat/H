@@ -187,7 +187,7 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
               <caption>Rating by method</caption>
               <tbody>
                 <tr className="is-governing">
-                  <th scope="row">IEC 60287 (backfill method)</th>
+                  <th scope="row">{r.governingCase.includes('backfill') ? 'IEC 60287 (backfill method)' : 'IEC 60287'}</th>
                   <td>{amps(r.I)} A</td>
                 </tr>
                 <tr>
@@ -301,7 +301,7 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
                       <td className="num">
                         {fmt(c.hottestTemp, 1)} °C <span className="muted">/ {fmt(c.maxTemp, 0)}</span>
                       </td>
-                      <td className="num">{fmt(c.W, 1)} W/m</td>
+                      <td className="num">{fmt(c.W * (c.cores === 3 ? 3 : 1), 1)} W/m</td>
                       <td className="num">+{fmt(c.mutualRise, 1)} K</td>
                       <td className="text">
                         <span className={`pill ${overLimit ? 'pill-bad' : atLimit ? 'pill-note' : 'pill-ok'}`}>
@@ -406,7 +406,7 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
             />
           )}
           {sections.map((sec) =>
-            sec.title.startsWith('Screen') ? (
+            sec.title.startsWith('Screen') && lambda.length ? (
               <section className="calc-block" key={sec.title}>
                 <CalcTableInner title={sec.title} rows={sec.rows} />
                 <div className="table-scroll">

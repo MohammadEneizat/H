@@ -14,7 +14,9 @@ import type {
 /** Optional numeric override: null / undefined means "use the standard value". */
 export type Override = number | null | undefined;
 
-export type ScreenForm = 'wires' | 'smooth' | 'corrugated';
+export type ScreenForm = 'wires' | 'smooth' | 'corrugated' | 'none';
+/** Conductor shape of three-core cables */
+export type ConductorShape = 'round' | 'sector';
 
 /**
  * Single-core cable as described on a manufacturer datasheet.
@@ -71,6 +73,22 @@ export interface CableSpec {
   };
   /** Overall diameter from the datasheet (mm); replaces the built-up diameter for external thermal resistance */
   overallDiameter_mm?: Override;
+  /**
+   * 1: single-core cable (default). 3: three-core cable carrying all three phases, without a
+   * metallic screen or armour (for example NYY, NAYY, N2XY, NA2XY).
+   */
+  cores?: 1 | 3;
+  /** Three-core cables */
+  threeCore?: {
+    /** Shape of the conductors; for sector-shaped ones the conductor diameter is the equivalent round diameter dx */
+    shape: ConductorShape;
+    /** Inner covering (extruded filler) over the laid-up cores (mm); empty: worked out from the overall diameter */
+    innerCovering_mm?: Override;
+    /** Radius of the circle circumscribing the conductors r1 (mm); empty: worked out from the area */
+    r1_mm?: Override;
+    /** Thermal resistivity of the filler, round conductors only (K·m/W); default 10 */
+    fillerRho?: Override;
+  };
 }
 
 export type InstallationType = 'direct' | 'ducts' | 'ductbank' | 'air' | 'trench';
@@ -109,6 +127,21 @@ export interface CircuitSpec {
   duct?: DuctSize;
   /** Rotated formation: flat vertical, or trefoil with the point down */
   rotated?: boolean;
+  /** Id of a shared conduit holding this circuit (cross-section layouts); its position replaces x and depth */
+  conduit?: string;
+}
+
+/** A conduit (duct) that can hold several circuits, for example two three-core cables in one pipe. */
+export interface ConduitSpec {
+  id: string;
+  name: string;
+  /** Centre, horizontal (m) */
+  x_m: number;
+  /** Centre depth (m) */
+  depth_m: number;
+  material: DuctKey;
+  innerD_mm: number;
+  outerD_mm: number;
 }
 
 /** A layer of native ground, stacked from the surface down; the last layer continues downwards. */
@@ -256,6 +289,24 @@ export interface InstallationSpec {
   };
   /** Other circuits in the same installation (not used in free air) */
   circuits: CircuitSpec[];
+  /** Shared conduits (cross-section layouts) */
+  conduits?: ConduitSpec[];
+  /** Id of the shared conduit holding the main circuit */
+  mainConduit?: string;
+  /** Internal, set by the solver: the shared conduit the circuit being modelled lies in */
+  conduitRef?: {
+    id: string;
+    name: string;
+    x_m: number;
+    depth_m: number;
+    material: DuctKey;
+    innerD_mm: number;
+    outerD_mm: number;
+    /** Number of cables in the conduit (a three-core cable counts once, a single-core circuit three times) */
+    groupCables: number;
+    /** Mean cable diameter in the conduit (mm) */
+    groupDe: number;
+  };
   ratingMode: RatingMode;
   /** Horizontal position of this circuit's centre (m); 0 for the main circuit */
   circuitX_m?: number;
@@ -312,6 +363,18 @@ export interface CableGeometry {
   DeBuilt: number;
   /** Overall diameter used for external thermal resistance */
   De: number;
+  /** 1 or 3 cores */
+  cores: 1 | 3;
+  /** Three-core cables: shape, r1, insulation between conductors t, laid-up and belt diameters, G */
+  threeCore?: {
+    shape: ConductorShape;
+    r1: number;
+    t: number;
+    coreD: number;
+    layD: number;
+    da: number;
+    innerCovering: number;
+  };
 }
 
 export interface ConductorResult {
@@ -389,6 +452,12 @@ export interface CircuitResult {
   ductInnerD?: number;
   dc: number;
   hottest: number;
+  /** 1 or 3 cores per cable */
+  cores: 1 | 3;
+  /** Where the cables are drawn (mm): one per cable, so one point for a three-core cable */
+  cablePositions: { x: number; y: number }[];
+  /** The shared conduit holding this circuit */
+  conduit?: { id: string; name: string; x: number; y: number; Do: number; Di: number };
 }
 
 export interface SystemResult {
@@ -410,7 +479,14 @@ export interface RatingResult {
   conductor: ConductorResult;
   dielectric: { C: number; Wd: number; included: boolean; threshold_kV: number };
   sheath: SheathResult;
-  thermal: { T1: number; T2: number; T3: number; t4: T4Breakdown };
+  thermal: {
+    T1: number;
+    T2: number;
+    T3: number;
+    t4: T4Breakdown;
+    /** Three-core cables: geometric factor of T1 */
+    threeCore?: { G: number; F2: number; filler: number; r1: number; da: number; t: number; shape: ConductorShape };
+  };
   losses: { Wc: number; Ws: number; Wd: number; W: number };
   temperatures: {
     conductor: number;

@@ -7,6 +7,7 @@ import {
   deriveGeometry,
   layerBoundaries,
   layoutCircuits,
+  placeInConduits,
   polygonShape,
   rectShape,
   shapeBounds,
@@ -16,6 +17,7 @@ import {
   type CableGeometry,
   type CableSpec,
   type CircuitSpec,
+  type ConduitSpec,
   type GroundMaterial,
   type GroundShape,
   type HeatSource,
@@ -49,6 +51,7 @@ export type Selection =
   | { kind: 'slab'; id: string }
   | { kind: 'circuit'; index: number }
   | { kind: 'source'; id: string }
+  | { kind: 'conduit'; id: string }
   | null;
 
 interface Group {
@@ -63,6 +66,8 @@ interface Group {
   I: number;
   metal: [string, string, string];
   cond: [string, string, string];
+  /** Shared conduit holding the circuit (mm) */
+  conduit?: { id: string; x: number; y: number; Do: number; Di: number };
 }
 
 export interface TrenchScene {
@@ -96,6 +101,8 @@ export function trenchScene(
   const base: {
     name: string;
     positions: { x: number; y: number }[];
+    cablePositions: { x: number; y: number }[];
+    conduit?: Group['conduit'];
     De: number;
     ductD?: number;
     ductInnerD?: number;
@@ -109,6 +116,7 @@ export function trenchScene(
         {
           name: 'C1',
           positions: r.positions,
+          cablePositions: r.geometry.cores === 3 ? [r.positions[0]] : r.positions,
           De: r.geometry.De,
           ductD: t.ducted ? inst.duct.outerD_mm : undefined,
           ductInnerD: t.ducted ? inst.duct.innerD_mm : undefined,
@@ -121,7 +129,8 @@ export function trenchScene(
     const cab = i === 0 ? cable : (inst.circuits[i - 1]?.cable ?? cable);
     return {
       name: c.name.replace(' (main)', ''),
-      positions: c.positions,
+      positions: c.cablePositions,
+      conduit: c.conduit,
       geo: c.geo ?? (i === 0 ? iec.geometry : deriveGeometry(cab).geometry),
       D: c.ductD ?? c.De,
       ductD: c.ductD,
@@ -149,6 +158,7 @@ export function trenchScene(
   });
   t.slabs.forEach((s) => grow((s.x_m - s.width_m / 2) * 1000, (s.x_m + s.width_m / 2) * 1000, (s.depth_m + s.thickness_m) * 1000));
   (inst.heatSources ?? []).forEach((h) => grow(h.x_m * 1000 - h.diameter_mm / 2, h.x_m * 1000 + h.diameter_mm / 2, h.depth_m * 1000 + h.diameter_mm / 2));
+  (inst.conduits ?? []).forEach((k) => grow(k.x_m * 1000 - k.outerD_mm / 2, k.x_m * 1000 + k.outerD_mm / 2, k.depth_m * 1000 + k.outerD_mm / 2));
   y1 += Math.max(450, y1 * 0.3);
   const padX = Math.max(600, (x1 - x0) * 0.3);
   x0 -= padX;
@@ -310,7 +320,7 @@ export function TrenchSvg({
   // Circuit labels: positions first, so other labels can keep clear of them
   const circLabels = (() => {
     const order = scene.groups
-      .map((g, gi) => ({ gi, gx: g.positions.reduce((a, p) => a + p.x, 0) / 3 }))
+      .map((g, gi) => ({ gi, gx: g.conduit ? g.conduit.x : g.positions.reduce((a, p) => a + p.x, 0) / g.positions.length }))
       .sort((a, b) => a.gx - b.gx);
     const below = new Set<number>();
     order.forEach((o, k) => {
@@ -323,8 +333,15 @@ export function TrenchSvg({
       const by0 = Math.min(...ys) - g.D / 2 - sw * 6;
       const bw = Math.max(...xs) - Math.min(...xs) + g.D + sw * 12;
       const bh = Math.max(...ys) - Math.min(...ys) + g.D + sw * 12;
-      const gx = xs.reduce((a, b) => a + b, 0) / 3;
-      const ly = below.has(gi) ? by0 + bh + fs * 1.1 : by0 - fs * 0.4;
+      const k = g.conduit;
+      const gx = k ? k.x : xs.reduce((a, b) => a + b, 0) / xs.length;
+      const ly = k
+        ? below.has(gi)
+          ? k.y + k.Do / 2 + fs * 1.1
+          : k.y - k.Do / 2 - fs * 0.4
+        : below.has(gi)
+          ? by0 + bh + fs * 1.1
+          : by0 - fs * 0.4;
       const text = Number.isFinite(g.I) ? `${g.name} · ${amps(g.I)} A · ${fmt(g.temp, 0)} °C` : g.name;
       const tw = text.length * fs * 0.56;
       return { gi, bx0, by0, bw, bh, gx, ly, text, box: { x0: gx - tw / 2, x1: gx + tw / 2, y0: ly - fs, y1: ly + fs * 0.2 } };
@@ -509,6 +526,29 @@ export function TrenchSvg({
           </g>
         );
       })}
+      {/* shared conduits */}
+      {(inst.conduits ?? []).map((k) => {
+        const isSel = sel?.kind === 'conduit' && sel.id === k.id;
+        const x = k.x_m * 1000;
+        const y = k.depth_m * 1000;
+        return (
+          <g key={k.id}>
+            <circle cx={x} cy={y} r={k.outerD_mm / 2} fill={pal.duct} stroke={isSel ? pal.accent : pal.ductEdge} strokeWidth={sw * (isSel ? 3 : 0.8)} pointerEvents="none" />
+            <circle cx={x} cy={y} r={k.innerD_mm / 2} fill={pal.air} pointerEvents="none" />
+            {drag && (
+              <circle
+                cx={x}
+                cy={y}
+                r={k.outerD_mm / 2 + sw * 3}
+                fill="transparent"
+                className="drag"
+                style={{ cursor: 'move' }}
+                {...on('conduit', k.id)}
+              />
+            )}
+          </g>
+        );
+      })}
       {/* ducts and cables */}
       {scene.groups.map((g, gi) => (
         <g key={gi} pointerEvents="none">
@@ -589,8 +629,8 @@ export function TrenchSvg({
         <g pointerEvents="none">
           {(() => {
             const g = scene.groups[0];
-            const gx = Math.min(...g.positions.map((p) => p.x)) - g.D / 2 - fs * 1.2;
-            const yc = g.positions.reduce((a, p) => a + p.y, 0) / 3;
+            const gx = g.conduit ? g.conduit.x - g.conduit.Do / 2 - fs * 1.2 : Math.min(...g.positions.map((p) => p.x)) - g.D / 2 - fs * 1.2;
+            const yc = g.conduit ? g.conduit.y : g.positions.reduce((a, p) => a + p.y, 0) / g.positions.length;
             return (
               <>
                 <line x1={gx} y1={0} x2={gx} y2={yc} stroke={pal.ink3} strokeWidth={sw * 0.9} markerStart={`url(#${id('arrow')})`} markerEnd={`url(#${id('arrow')})`} />
@@ -685,6 +725,31 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
       onChange({ ...base, ...m });
     } else onChange({ ...base, circuits: base.circuits.map((c, i) => (i === index - 1 ? { ...c, ...patch } : c)) });
   };
+  const conduits = inst.conduits ?? [];
+  const setConduit = (kid: string, patch: Partial<ConduitSpec>, base: InstallationSpec = inst) =>
+    onChange(placeInConduits({ ...base, conduits: (base.conduits ?? []).map((k) => (k.id === kid ? { ...k, ...patch } : k)) }));
+  /** The shared conduit holding circuit `index` (0 = main), if any */
+  const conduitOfCircuit = (index: number, base: InstallationSpec = inst) => {
+    const id = index === 0 ? base.mainConduit : base.circuits[index - 1]?.conduit;
+    return id ? (base.conduits ?? []).find((k) => k.id === id) : undefined;
+  };
+  /** Puts circuit `index` in conduit `kid`, or takes it out (undefined) */
+  const placeCircuit = (index: number, kid: string | undefined, extra: Partial<CircuitSpec> & { mainDucted?: boolean } = {}) => {
+    // Taken out of a conduit: put the circuit just beside it, so it does not overlap
+    const was = conduitOfCircuit(index);
+    const beside = !kid && was ? { x_m: r3(was.x_m + was.outerD_mm / 2000 + 0.25), depth_m: was.depth_m } : {};
+    const { mainDucted, ...rest } = extra;
+    const next: InstallationSpec =
+      index === 0
+        ? {
+            ...inst,
+            mainConduit: kid,
+            ...('x_m' in beside ? { mainX_m: beside.x_m, depth_m: beside.depth_m } : {}),
+            ...(mainDucted !== undefined ? { trench: { ...t, ducted: mainDucted } } : {}),
+          }
+        : { ...inst, circuits: inst.circuits.map((c, i) => (i === index - 1 ? { ...c, ...rest, ...beside, conduit: kid } : c)) };
+    onChange(placeInConduits(next));
+  };
 
   // --- pointer handling
   const toMm = (e: { clientX: number; clientY: number }) => {
@@ -718,6 +783,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
     if (kind === 'circuit') setSel({ kind: 'circuit', index: a as number });
     else if (kind === 'slab') setSel({ kind: 'slab', id: a as string });
     else if (kind === 'source') setSel({ kind: 'source', id: a as string });
+    else if (kind === 'conduit') setSel({ kind: 'conduit', id: a as string });
     else if (kind === 'shape') setSel({ kind: 'shape', id: a as string, band: b as string | undefined });
     else if (kind.startsWith('band-')) setSel({ kind: 'shape', id: a as string, band: b as string });
     else if (kind === 'vertex') setSel({ kind: 'shape', id: a as string, vertex: b as number });
@@ -746,8 +812,18 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
     const b = d.inst;
     const bt = b.trench!;
     switch (d.kind) {
+      case 'conduit': {
+        const k = (b.conduits ?? []).find((x) => x.id === d.a)!;
+        setConduit(k.id, { x_m: sn(k.x_m + dx), depth_m: Math.max(0.05, sn(k.depth_m + dy)) }, b);
+        break;
+      }
       case 'circuit': {
         const i = d.a as number;
+        const kc = conduitOfCircuit(i, b);
+        if (kc) {
+          setConduit(kc.id, { x_m: sn(kc.x_m + dx), depth_m: Math.max(0.05, sn(kc.depth_m + dy)) }, b);
+          break;
+        }
         const x0 = i === 0 ? (b.mainX_m ?? 0) : b.circuits[i - 1].x_m;
         const y0 = i === 0 ? b.depth_m : b.circuits[i - 1].depth_m;
         setCircuit(i, { x_m: sn(x0 + dx), depth_m: Math.max(0.1, sn(y0 + dy)) }, b);
@@ -903,6 +979,19 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
     onChange({ ...inst, heatSources: [...(inst.heatSources ?? []), h] });
     setSel({ kind: 'source', id: h.id });
   };
+  const addConduit = () => {
+    const k: ConduitSpec = {
+      id: uid(),
+      name: `DN160${conduits.length ? ` (${conduits.length + 1})` : ''}`,
+      x_m: r3(contentRight() + 0.4),
+      depth_m: md,
+      material: 'PE',
+      innerD_mm: 141,
+      outerD_mm: 160,
+    };
+    onChange({ ...inst, conduits: [...conduits, k] });
+    setSel({ kind: 'conduit', id: k.id });
+  };
   const addSlab = (kind: 'tile' | 'tape') => {
     const s: TrenchSlab = {
       id: uid(),
@@ -946,6 +1035,12 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
       const c = { ...h, id: uid(), name: `${h.name} copy`, x_m: r3(h.x_m + h.diameter_mm / 1000 + 0.15) };
       onChange({ ...inst, heatSources: [...(inst.heatSources ?? []), c] });
       setSel({ kind: 'source', id: c.id });
+    } else if (sel.kind === 'conduit') {
+      const k = conduits.find((x) => x.id === sel.id);
+      if (!k) return;
+      const c = { ...k, id: uid(), name: `${k.name} copy`, x_m: r3(k.x_m + k.outerD_mm / 1000 + 0.15) };
+      onChange({ ...inst, conduits: [...conduits, c] });
+      setSel({ kind: 'conduit', id: c.id });
     } else if (sel.kind === 'circuit') {
       const src: CircuitSpec =
         sel.index === 0
@@ -967,7 +1062,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
               ducted: t.ducted,
             }
           : inst.circuits[sel.index - 1];
-      const c = { ...clone(src), id: uid(), name: `C${inst.circuits.length + 2}`, x_m: r3(contentRight() + 0.35) };
+      const c = { ...clone(src), id: uid(), name: `C${inst.circuits.length + 2}`, x_m: r3(contentRight() + 0.35), conduit: undefined };
       onChange({ ...inst, circuits: [...inst.circuits, c] });
       setSel({ kind: 'circuit', index: inst.circuits.length + 1 });
     }
@@ -990,7 +1085,16 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
       setT({ shapes: t.shapes.filter((x) => x.id !== sel.id) });
     } else if (sel.kind === 'slab') setT({ slabs: t.slabs.filter((x) => x.id !== sel.id) });
     else if (sel.kind === 'source') onChange({ ...inst, heatSources: (inst.heatSources ?? []).filter((x) => x.id !== sel.id) });
-    else if (sel.kind === 'circuit' && sel.index > 0) onChange({ ...inst, circuits: inst.circuits.filter((_, i) => i !== sel.index - 1) });
+    else if (sel.kind === 'conduit') {
+      // The circuits stay where the conduit was, without it
+      const placed = placeInConduits(inst);
+      onChange({
+        ...placed,
+        conduits: conduits.filter((x) => x.id !== sel.id),
+        mainConduit: placed.mainConduit === sel.id ? undefined : placed.mainConduit,
+        circuits: placed.circuits.map((c) => (c.conduit === sel.id ? { ...c, conduit: undefined } : c)),
+      });
+    } else if (sel.kind === 'circuit' && sel.index > 0) onChange({ ...inst, circuits: inst.circuits.filter((_, i) => i !== sel.index - 1) });
     else if (sel.kind === 'layer' && t.layers.length > 1) setT({ layers: t.layers.filter((x) => x.id !== sel.id) });
     else return;
     setSel(null);
@@ -1029,7 +1133,10 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
     if (dirs[e.key]) {
       const [dx, dy] = dirs[e.key];
       e.preventDefault();
-      if (sel.kind === 'circuit') {
+      const kc = sel.kind === 'conduit' ? conduits.find((x) => x.id === sel.id) : sel.kind === 'circuit' ? conduitOfCircuit(sel.index) : undefined;
+      if (kc) {
+        setConduit(kc.id, { x_m: r3(kc.x_m + dx), depth_m: Math.max(0.05, r3(kc.depth_m + dy)) });
+      } else if (sel.kind === 'circuit') {
         const x0 = sel.index === 0 ? mx : inst.circuits[sel.index - 1].x_m;
         const y0 = sel.index === 0 ? md : inst.circuits[sel.index - 1].depth_m;
         setCircuit(sel.index, { x_m: r3(x0 + dx), depth_m: Math.max(0.1, r3(y0 + dy)) });
@@ -1052,6 +1159,56 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
       remove();
     }
   };
+
+  // --- zoom around a point: the selected item, else the main circuit
+  const focus = (): { x: number; y: number; size: number } | null => {
+    if (!scene) return null;
+    const groupFocus = (gi: number) => {
+      const g = scene.groups[gi];
+      if (!g) return null;
+      if (g.conduit) return { x: g.conduit.x, y: g.conduit.y, size: g.conduit.Do };
+      const xs = g.positions.map((p) => p.x);
+      const ys = g.positions.map((p) => p.y);
+      return {
+        x: (Math.min(...xs) + Math.max(...xs)) / 2,
+        y: (Math.min(...ys) + Math.max(...ys)) / 2,
+        size: Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) + g.D,
+      };
+    };
+    if (sel?.kind === 'conduit') {
+      const k = conduits.find((x) => x.id === sel.id);
+      if (k) return { x: k.x_m * 1000, y: k.depth_m * 1000, size: k.outerD_mm };
+    }
+    if (sel?.kind === 'circuit') return groupFocus(sel.index);
+    if (sel?.kind === 'source') {
+      const h = (inst.heatSources ?? []).find((x) => x.id === sel.id);
+      if (h) return { x: h.x_m * 1000, y: h.depth_m * 1000, size: h.diameter_mm };
+    }
+    if (sel?.kind === 'shape') {
+      const sh = t.shapes.find((x) => x.id === sel.id);
+      if (sh) {
+        const bb = shapeBounds(sh);
+        return { x: ((bb.x0 + bb.x1) / 2) * 1000, y: ((bb.y0 + bb.y1) / 2) * 1000, size: Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0) * 1000 };
+      }
+    }
+    return groupFocus(0);
+  };
+  const zoomAt = (factor: number | 'fit-focus', at?: { x: number; y: number }) =>
+    setView((v) => {
+      const f = at ? { ...at, size: 0 } : focus();
+      const reg = scene?.region;
+      if (!reg || !f) return { ...v, zoom: Math.min(40, Math.max(0.25, v.zoom * (factor === 'fit-focus' ? 1 : factor))) };
+      const w = reg.x1 - reg.x0;
+      const z2 =
+        factor === 'fit-focus'
+          ? Math.min(40, Math.max(0.25, (w * v.zoom) / Math.max(f.size * 5, 350)))
+          : Math.min(40, Math.max(0.25, v.zoom * factor));
+      const c = { x: (reg.x0 + reg.x1) / 2, y: (reg.y0 + reg.y1) / 2 };
+      const c0 = { x: c.x - v.panX, y: c.y - v.panY };
+      const k = factor === 'fit-focus' ? 0 : v.zoom / z2;
+      const cn = { x: f.x + (c.x - f.x) * k, y: f.y + (c.y - f.y) * k };
+      return { zoom: z2, panX: cn.x - c0.x, panY: cn.y - c0.y };
+    });
 
   // --- inspector
   const n0 = (v: number | null) => (v === null ? 0 : v);
@@ -1217,6 +1374,46 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
         </div>
       );
     }
+  } else if (sel?.kind === 'conduit') {
+    const k = conduits.find((x) => x.id === sel.id);
+    if (k) {
+      title = 'Conduit';
+      const all = [{ i: 0, name: 'C1 (main circuit)' }, ...inst.circuits.map((c, n) => ({ i: n + 1, name: c.name || `C${n + 2}` }))];
+      const count = all.filter(({ i }) => conduitOfCircuit(i)?.id === k.id).length;
+      inspector = (
+        <div className="field-grid">
+          <TextField id="cd-name" label="Name" value={k.name} onChange={(name) => setConduit(k.id, { name })} />
+          <SelectField
+            id="cd-mat"
+            label="Material"
+            value={k.material as 'PE' | 'PVC' | 'earthenware'}
+            options={[...ductOptions]}
+            onChange={(material) => setConduit(k.id, { material })}
+          />
+          <NumField id="cd-do" label="Outer diameter" unit="mm" value={k.outerD_mm} onChange={(v) => setConduit(k.id, { outerD_mm: n0(v) })} />
+          <NumField id="cd-di" label="Inner diameter" unit="mm" value={k.innerD_mm} onChange={(v) => setConduit(k.id, { innerD_mm: n0(v) })} />
+          <NumField id="cd-x" label="Horizontal position" unit="m" value={k.x_m} onChange={(v) => setConduit(k.id, { x_m: n0(v) })} />
+          <NumField id="cd-y" label="Depth to centre" unit="m" value={k.depth_m} onChange={(v) => setConduit(k.id, { depth_m: n0(v) })} />
+          <fieldset className="field field-wide member-list">
+            <legend className="field-label">Circuits in this conduit</legend>
+            {all.map(({ i, name }) => (
+              <Toggle
+                key={i}
+                id={`cd-m${i}`}
+                label={name}
+                checked={conduitOfCircuit(i)?.id === k.id}
+                onChange={(v) => placeCircuit(i, v ? k.id : undefined)}
+              />
+            ))}
+          </fieldset>
+          <p className="field-hint field-wide">
+            {count > 1
+              ? `IEC 60287-2-1: the ${count} circuits are rated together. The air in the conduit uses the equivalent diameter of the group of cables (2 cables 1.65·De, 3 cables 2.15·De, 4 cables 2.5·De); the conduit wall and the ground carry the heat of all of them.`
+              : 'Switch on the circuits that lie in this conduit. A single-core circuit counts as three cables, a three-core cable as one.'}
+          </p>
+        </div>
+      );
+    }
   } else if (sel?.kind === 'circuit') {
     const i = sel.index;
     const c = i === 0 ? null : inst.circuits[i - 1];
@@ -1226,13 +1423,46 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
       const duct = i === 0 ? inst.duct : { ...inst.duct, ...(c!.duct ?? {}) };
       const setDuct = (patch: Partial<typeof duct>) =>
         i === 0 ? onChange({ ...inst, duct: { ...inst.duct, ...patch } }) : setCircuit(i, { duct: { material: duct.material, innerD_mm: duct.innerD_mm, outerD_mm: duct.outerD_mm, ...patch } });
+      const kc = conduitOfCircuit(i);
+      const cab = i === 0 ? cable : (c!.cable ?? cable);
+      const threeCore = cab.cores === 3;
+      const placement = kc ? `k:${kc.id}` : ducted ? 'ducts' : 'direct';
+      const setPlacement = (v: string) => {
+        if (v.startsWith('k:')) return placeCircuit(i, v.slice(2));
+        const d = v === 'ducts';
+        if (i === 0) placeCircuit(0, undefined, { mainDucted: d });
+        else placeCircuit(i, undefined, { ducted: d });
+      };
       inspector = (
         <div className="field-grid">
           <p className="field-hint field-wide">
             {i === 0 ? 'Main circuit. Cable and bonding are set in the Cable and Installation tabs.' : 'Cable, bonding and load are set in the Circuits tab.'}
+            {threeCore ? ' Three-core cable: one cable carries the circuit.' : ''}
           </p>
+          <SelectField
+            id="ci-place"
+            label="Placement"
+            value={placement}
+            options={[
+              { value: 'direct', label: 'Direct in the ground' },
+              { value: 'ducts', label: threeCore ? 'In its own duct' : 'In its own ducts (one per cable)' },
+              ...conduits.map((k) => ({ value: `k:${k.id}`, label: `In ${k.name} (shared conduit)` })),
+            ]}
+            onChange={setPlacement}
+          />
+          {kc ? (
+            <p className="field-hint field-wide">
+              Lies in {kc.name} at {fmt(kc.x_m, 2)} m, {fmt(kc.depth_m, 2)} m deep. Drag it or the conduit to move both.{' '}
+              <button type="button" className="link-btn" onClick={() => setSel({ kind: 'conduit', id: kc.id })}>
+                Edit the conduit
+              </button>
+            </p>
+          ) : (
+            <>
           <NumField id="ci-x" label="Horizontal position" unit="m" value={i === 0 ? mx : c!.x_m} onChange={(v) => setCircuit(i, { x_m: n0(v) })} />
           <NumField id="ci-d" label="Depth to centre" unit="m" value={i === 0 ? md : c!.depth_m} onChange={(v) => setCircuit(i, { depth_m: n0(v) })} />
+          {!threeCore && (
+            <>
           <Segmented
             id="ci-form"
             label="Formation"
@@ -1253,17 +1483,15 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           {!(i === 0 ? inst.touching : c!.touching) && (
             <NumField id="ci-s" label="Axial spacing" unit="mm" value={i === 0 ? inst.spacing_mm : c!.spacing_mm} onChange={(v) => setCircuit(i, { spacing_mm: n0(v) })} />
           )}
-          <Toggle
-            id="ci-duct"
-            label="In ducts"
-            checked={ducted}
-            onChange={(v) => (i === 0 ? setT({ ducted: v }) : setCircuit(i, { ducted: v }))}
-          />
+            </>
+          )}
           {ducted && (
             <>
               <SelectField id="ci-dm" label="Duct material" value={duct.material as 'PE' | 'PVC' | 'earthenware'} options={[...ductOptions]} onChange={(material) => setDuct({ material })} />
               <NumField id="ci-di" label="Duct inner diameter" unit="mm" value={duct.innerD_mm} onChange={(v) => setDuct({ innerD_mm: n0(v) })} />
               <NumField id="ci-do" label="Duct outer diameter" unit="mm" value={duct.outerD_mm} onChange={(v) => setDuct({ outerD_mm: n0(v) })} />
+            </>
+          )}
             </>
           )}
         </div>
@@ -1325,7 +1553,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
             type="button"
             className="btn"
             onClick={() => {
-              onChange(TRENCH_TEMPLATES.find((x) => x.id === template)!.apply(inst));
+              onChange(TRENCH_TEMPLATES.find((x) => x.id === template)!.apply({ ...inst, conduits: [], mainConduit: undefined }));
               setSel(null);
               setView({ zoom: 1, panX: 0, panY: 0 });
             }}
@@ -1360,6 +1588,9 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           <span className="tool-label">Add</span>
           <button type="button" className="btn btn-quiet" onClick={addCircuit}>
             Circuit
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={addConduit} title="A pipe that can hold several circuits">
+            Conduit
           </button>
           <button type="button" className="btn btn-quiet" onClick={addSource}>
             Heat source
@@ -1431,7 +1662,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           onWheel={(e) => {
             if (!e.ctrlKey && !e.metaKey) return;
             e.preventDefault();
-            setView((v) => ({ ...v, zoom: Math.min(12, Math.max(0.25, v.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15))) }));
+            zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, toMm(e));
           }}
         >
           {scene ? (
@@ -1449,14 +1680,17 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           <div className="trench-viewbar">
             <div className="tool-group">
               <span className="tool-label">Zoom</span>
-              <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.max(0.25, v.zoom / 1.4) }))} aria-label="Zoom out">
+              <button type="button" className="btn btn-quiet" onClick={() => zoomAt(1 / 1.4)} aria-label="Zoom out">
                 −
               </button>
-              <button type="button" className="btn btn-quiet" onClick={() => setView((v) => ({ ...v, zoom: Math.min(12, v.zoom * 1.4) }))} aria-label="Zoom in">
+              <button type="button" className="btn btn-quiet" onClick={() => zoomAt(1.4)} aria-label="Zoom in" title="Zoom in on the selected item (or the main circuit)">
                 +
               </button>
               <button type="button" className="btn btn-quiet" onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>
                 Fit
+              </button>
+              <button type="button" className="btn btn-quiet" onClick={() => zoomAt('fit-focus')} title="Zoom to the selected item, or the main circuit">
+                Close-up
               </button>
             </div>
             <div className="tool-group">
@@ -1477,6 +1711,13 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
               <li key={`c${c.index}`}>
                 <button type="button" className={`obj${isSel('circuit', c.index) ? ' is-on' : ''}`} onClick={() => setSel({ kind: 'circuit', index: c.index })}>
                   <span className="obj-kind">Circuit</span> {c.name}
+                </button>
+              </li>
+            ))}
+            {conduits.map((k) => (
+              <li key={k.id}>
+                <button type="button" className={`obj${isSel('conduit', k.id) ? ' is-on' : ''}`} onClick={() => setSel({ kind: 'conduit', id: k.id })}>
+                  <span className="obj-kind">Conduit</span> {k.name} · ⌀ {fmt(k.outerD_mm, 0)} mm
                 </button>
               </li>
             ))}

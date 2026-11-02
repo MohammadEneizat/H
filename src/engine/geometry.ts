@@ -16,7 +16,8 @@ export function deriveGeometry(c: CableSpec): {
   const dc = c.conductor.diameter_mm;
   if (!pos(dc)) errors.push('Enter the conductor diameter.');
   if (!pos(c.insulation.thickness_mm)) errors.push('Enter the insulation thickness.');
-  if (!pos(c.screen.thickness_mm))
+  if (c.cores === 3) return threeCoreGeometry(c, errors, warnings);
+  if (c.screen.form !== 'none' && !pos(c.screen.thickness_mm))
     errors.push(
       c.screen.form === 'wires' ? 'Enter the screen wire diameter.' : 'Enter the sheath thickness.',
     );
@@ -47,7 +48,14 @@ export function deriveGeometry(c: CableSpec): {
   let Dit: number | undefined;
   let Doc: number | undefined;
 
-  if (c.screen.form === 'wires') {
+  if (c.screen.form === 'none') {
+    dMean = Dunder;
+    Ds = Dunder;
+    As = 0;
+    ts = 0;
+    Da = Dunder;
+    t1 = (Dunder - dc) / 2;
+  } else if (c.screen.form === 'wires') {
     dMean = Dunder + t;
     Ds = Dunder + 2 * t;
     const fromCount = pos(c.screen.wireCount) ? (c.screen.wireCount * Math.PI * t * t) / 4 : undefined;
@@ -97,7 +105,79 @@ export function deriveGeometry(c: CableSpec): {
   }
 
   return {
-    geometry: { dc, dcScreen, Di, Dis, Dunder, dMean, Ds, ts, As, Dit, Doc, t1, Da, t3, DeBuilt, De },
+    geometry: { dc, dcScreen, Di, Dis, Dunder, dMean, Ds, ts, As, Dit, Doc, t1, Da, t3, DeBuilt, De, cores: 1 },
+    errors,
+    warnings,
+  };
+}
+
+/**
+ * Radius of the circle circumscribing the three conductors (mm).
+ * Round: centres at s/√3 from the axis, s = dc + t. Sector-shaped: three 120° sectors with
+ * half the insulation between conductors on each straight side, πr²/3 − t·r = area of the
+ * equivalent round conductor (πdx²/4).
+ */
+export function threeCoreR1(shape: 'round' | 'sector', dc: number, t: number): number {
+  if (shape === 'round') return (dc + t) / Math.sqrt(3) + dc / 2;
+  const A = (Math.PI * dc * dc) / 4;
+  const k = Math.PI / 3;
+  return (t + Math.sqrt(t * t + 4 * k * A)) / (2 * k);
+}
+
+/** Three-core cable without metallic screen: cores laid up, inner covering, oversheath. */
+function threeCoreGeometry(c: CableSpec, errors: string[], warnings: string[]) {
+  const tc = c.threeCore ?? { shape: 'round' as const };
+  const dc = c.conductor.diameter_mm;
+  // Radial thickness of each core's insulation, screens counted as insulation
+  const tIns = c.conductorScreen_mm + c.insulation.thickness_mm + c.insulationScreen_mm;
+  const t = 2 * tIns;
+  const r1 = pos(tc.r1_mm) ? tc.r1_mm : threeCoreR1(tc.shape, dc, t);
+  const coreD = tc.shape === 'round' ? dc + t : NaN;
+  const layD = 2 * (r1 + tIns);
+  const t3 = c.jacket.thickness_mm;
+  if (!pos(t3)) errors.push('Enter the oversheath thickness.');
+  let cover: number;
+  if (given(tc.innerCovering_mm) && tc.innerCovering_mm >= 0) cover = tc.innerCovering_mm;
+  else if (pos(c.overallDiameter_mm)) {
+    cover = Math.max(0, (c.overallDiameter_mm - 2 * t3 - layD) / 2);
+    if (c.overallDiameter_mm - 2 * t3 < layD - 0.5)
+      warnings.push(
+        `The overall diameter leaves no room for the cores (laid-up diameter ${layD.toFixed(1)} mm). Check the insulation and sheath thicknesses, or enter r1.`,
+      );
+  } else cover = 0;
+  const da = layD + 2 * cover;
+  const DeBuilt = da + 2 * t3;
+  let De = DeBuilt;
+  if (pos(c.overallDiameter_mm)) {
+    De = c.overallDiameter_mm;
+    const diff = Math.abs(De - DeBuilt) / DeBuilt;
+    if (diff > 0.03)
+      warnings.push(
+        `Datasheet overall diameter (${De.toFixed(1)} mm) differs from the layer build-up (${DeBuilt.toFixed(1)} mm) by ${(diff * 100).toFixed(1)} %. Check the layer thicknesses.`,
+      );
+  }
+  const dcScreen = dc + 2 * c.conductorScreen_mm;
+  const Di = dcScreen + 2 * c.insulation.thickness_mm;
+  const Dis = Di + 2 * c.insulationScreen_mm;
+  return {
+    geometry: {
+      dc,
+      dcScreen,
+      Di,
+      Dis,
+      Dunder: da,
+      dMean: da,
+      Ds: da,
+      ts: 0,
+      As: 0,
+      t1: tIns,
+      Da: da,
+      t3,
+      DeBuilt,
+      De,
+      cores: 3 as const,
+      threeCore: { shape: tc.shape, r1, t, coreD, layD, da, innerCovering: cover },
+    },
     errors,
     warnings,
   };

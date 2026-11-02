@@ -3,9 +3,11 @@
 A web app that calculates the continuous current rating (ampacity) of power cables to
 **IEC 60287**, from the values on a cable manufacturer's datasheet.
 
-It covers three-phase circuits of **single-core cables without armour**: the usual MV and
-HV XLPE land cable with a copper wire screen, a lead or aluminium sheath, or a corrugated
-sheath. Several circuits can share a trench, ducts or a duct bank, each with its own cable.
+It covers three-phase circuits of **single-core cables without armour** (the usual MV and
+HV XLPE land cable with a copper wire screen, a lead or aluminium sheath, a corrugated
+sheath, or no metallic screen at all) and **three-core cables without screen or armour**,
+such as the LV cables NYY, NAYY, N2XY and NA2XY. Several circuits can share a trench, ducts,
+a duct bank or one conduit, each with its own cable.
 
 ## Run it
 
@@ -138,6 +140,47 @@ Checks in `tests/numeric.test.ts`:
 - turned formations, per-circuit ducts and heat sources give the expected positions and
   temperature rises (a heat source is checked against the closed-form image formula).
 
+## Three-core cables
+
+Choose **Three-core** under *Cable type*. One three-core cable carries one circuit. The
+conductors can be sector-shaped (SE, SM) or round (RE, RM); for sector-shaped ones the
+conductor diameter is the diameter of a round conductor with the same area and compaction
+(dx). Enter the core insulation, the inner covering (extruded filler) and the oversheath;
+if the inner covering is left empty it is worked out from the datasheet overall diameter.
+
+- **T1** between one conductor and the oversheath follows IEC 60287-2-1 4.1.2.2:
+  G = 3·F2·ln(da/2r1), F2 = 1 + 3t/[2π(dx + t) − t] for sector-shaped conductors, where r1
+  is the radius of the circle around the conductors (worked out from the area, or entered)
+  and da the diameter over the filler. For round conductors Equation 1 with the filler term
+  is used; its G (Figure 3 of the standard) is approximated with the sector formula, and a
+  warning says so.
+- **Proximity effect** with s = dc + t, two-thirds of the round-conductor value for sector
+  conductors (IEC 60287-1-1 2.1.4).
+- The rating equation uses **n = 3**, λ1 = λ2 = 0 and T2 = 0. T3 and T4 carry the heat of all
+  three cores.
+
+The library has two examples with typical NA2XY values (3×240 SM three-core, and
+1×240 RM single-core without screen). Replace them with your datasheet.
+
+## Shared conduits
+
+In the cross-section editor, **Add → Conduit** places a pipe (DN160, PE 160/141 mm by default)
+that can hold several circuits. Choose *Placement: In DN160* on each circuit, or switch the
+circuits on in the conduit's panel. The cables are drawn lying along the bottom of the pipe;
+dragging the conduit moves them with it.
+
+The circuits in one conduit are rated together, after IEC 60287-2-1 4.2.7:
+- T4′ (air in the conduit) uses the equivalent diameter of the group of cables: two cables
+  1.65·De, three 2.15·De, four 2.5·De. A single-core circuit counts as three cables, a
+  three-core cable as one. More than four cables are extrapolated (with a warning).
+- The mean air temperature θm, the conduit wall T4″ and the ground T4‴ carry the heat of
+  every cable in the conduit; each circuit's permissible rise is reduced by the heat of the
+  others crossing the same air gap, wall and ground.
+- In the numerical model the conduit is one body holding the heat of all its cables.
+
+The template **LV: two circuits in one DN160 conduit, 2 m deep** sets this up: load the NA2XY
+3×240 cable from the Library first.
+
 ## Several circuits
 
 The **Circuits** tab adds further circuits around the main circuit C1. Each has its own
@@ -192,8 +235,8 @@ be confirmed against your copy of IEC 60287-2-1.
 
 ## Not covered yet
 
-- Three-core cables, armour (λ2, T2), pipe-type cables
-- Several cables in one duct
+- Armour (λ2, T2), three-core cables with metallic screens, pipe-type cables
+- Round three-core conductors use an approximation of IEC Figure 3 for G
 - Soil drying-out in the numerical model, and longitudinal heat flow at short crossings
 - Cyclic and emergency ratings (IEC 60853)
 - Finite-element calculation for non-standard geometries
@@ -205,6 +248,6 @@ src/engine/   IEC 60287 engine, cross-section model, numerical ground model (no 
 src/ui/       React components, drawings, heat map
 src/report/   calculation-sheet tables and the PDF report
 public/fonts/ font subsets embedded in the PDF
-tests/        engine tests (Vitest)
+tests/        engine tests (Vitest): IEC formulas, numerical model, three-core cables and conduits
 scripts/      packs a single-file build for hosting
 ```

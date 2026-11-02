@@ -32,6 +32,10 @@ export function CableForm({ cable, onChange }: Props) {
   const setIns = (patch: Partial<CableSpec['insulation']>) => set({ insulation: { ...c.insulation, ...patch } });
   const setScr = (patch: Partial<CableSpec['screen']>) => set({ screen: { ...c.screen, ...patch } });
   const setJac = (patch: Partial<CableSpec['jacket']>) => set({ jacket: { ...c.jacket, ...patch } });
+  const three = c.cores === 3;
+  const tc = c.threeCore ?? { shape: 'sector' as const, innerCovering_mm: null, r1_mm: null, fillerRho: null };
+  const setTc = (patch: Partial<NonNullable<CableSpec['threeCore']>>) => set({ threeCore: { ...tc, ...patch } });
+  const noScreen = !three && c.screen.form === 'none';
 
   const ins = INSULATIONS[c.insulation.material];
   const dflt = defaultSkinProximity(c.conductor.material, c.conductor.construction, ins.system, c.conductor.millikenWires);
@@ -42,6 +46,22 @@ export function CableForm({ cable, onChange }: Props) {
     <div className="form">
       <Section title="Cable">
         <TextField id="cable-name" label="Name" value={c.name} onChange={(name) => set({ name })} />
+        <Segmented
+          id="cable-cores"
+          label="Cable type"
+          value={three ? '3' : '1'}
+          options={[
+            { value: '1', label: 'Single-core' },
+            { value: '3', label: 'Three-core' },
+          ]}
+          onChange={(v) => set(v === '3' ? { cores: 3, threeCore: tc } : { cores: 1 })}
+        />
+        {three && (
+          <p className="field-hint field-wide">
+            Three-core cables are rated without a metallic screen or armour, as for NYY, NAYY, N2XY and NA2XY. One
+            three-core cable makes one circuit.
+          </p>
+        )}
         <NumField id="u0" label="Rated voltage U0" unit="kV" value={c.U0_kV} onChange={(v) => set({ U0_kV: num(v) })} />
         <NumField
           id="tmax"
@@ -68,12 +88,24 @@ export function CableForm({ cable, onChange }: Props) {
           label="Construction"
           value={c.conductor.construction}
           options={[
-            { value: 'stranded', label: 'Round stranded' },
-            { value: 'solid', label: 'Round solid' },
+            { value: 'stranded', label: three ? 'Stranded (RM, SM)' : 'Round stranded' },
+            { value: 'solid', label: three ? 'Solid (RE, SE)' : 'Round solid' },
             { value: 'milliken', label: 'Milliken (segmental)' },
           ]}
           onChange={(construction) => setCond({ construction })}
         />
+        {three && (
+          <Segmented
+            id="cond-shape"
+            label="Conductor shape"
+            value={tc.shape}
+            options={[
+              { value: 'sector', label: 'Sector-shaped (SE, SM)' },
+              { value: 'round', label: 'Round (RE, RM)' },
+            ]}
+            onChange={(shape) => setTc({ shape })}
+          />
+        )}
         {c.conductor.construction === 'milliken' && c.conductor.material === 'Cu' && ins.system === 'extruded' && (
           <SelectField
             id="cond-wires"
@@ -96,10 +128,15 @@ export function CableForm({ cable, onChange }: Props) {
         />
         <NumField
           id="cond-d"
-          label="Conductor diameter"
+          label={three && tc.shape === 'sector' ? 'Equivalent round diameter dx' : 'Conductor diameter'}
           unit="mm"
           value={c.conductor.diameter_mm}
           onChange={(v) => setCond({ diameter_mm: num(v) })}
+          hint={
+            three && tc.shape === 'sector'
+              ? 'Diameter of a round conductor with the same area and compaction (IEC 60287-2-1 4.1.2.2.6).'
+              : undefined
+          }
         />
         <NumField
           id="cond-r20"
@@ -168,14 +205,16 @@ export function CableForm({ cable, onChange }: Props) {
           value={c.insulationScreen_mm}
           onChange={(v) => set({ insulationScreen_mm: num(v) })}
         />
-        <NumField
-          id="bed-t"
-          label="Tapes under metallic screen"
-          unit="mm"
-          value={c.bedding_mm}
-          onChange={(v) => set({ bedding_mm: num(v) })}
-          hint="Swelling or bedding tapes. Counted as insulation in T1."
-        />
+        {!three && !noScreen && (
+          <NumField
+            id="bed-t"
+            label="Tapes under metallic screen"
+            unit="mm"
+            value={c.bedding_mm}
+            onChange={(v) => set({ bedding_mm: num(v) })}
+            hint="Swelling or bedding tapes. Counted as insulation in T1."
+          />
+        )}
         <Overrides>
           <NumField
             id="ins-rho"
@@ -205,6 +244,43 @@ export function CableForm({ cable, onChange }: Props) {
         </Overrides>
       </Section>
 
+{three ? (
+      <Section title="Cores and inner covering">
+        <NumField
+          id="tc-cover"
+          label="Inner covering (filler)"
+          unit="mm"
+          optional
+          value={tc.innerCovering_mm}
+          onChange={(v) => setTc({ innerCovering_mm: v })}
+          placeholder={Number.isFinite(g.threeCore?.innerCovering ?? NaN) ? `${fmt(g.threeCore!.innerCovering, 1)} ${c.overallDiameter_mm ? 'from ⌀' : ''}`.trim() : undefined}
+          hint="Extruded filler over the laid-up cores. Left empty, it is worked out from the datasheet overall diameter."
+        />
+        <NumField
+          id="tc-r1"
+          label="Circle around the conductors r1"
+          unit="mm"
+          optional
+          value={tc.r1_mm}
+          onChange={(v) => setTc({ r1_mm: v })}
+          placeholder={Number.isFinite(g.threeCore?.r1 ?? NaN) ? `${fmt(g.threeCore!.r1, 1)} calculated` : undefined}
+          hint="Radius of the circle touching the outside of the three conductors."
+        />
+        {tc.shape === 'round' && (
+          <NumField
+            id="tc-filler"
+            label="Filler resistivity ρf"
+            unit="K·m/W"
+            optional
+            value={tc.fillerRho}
+            onChange={(v) => setTc({ fillerRho: v })}
+            placeholder="10"
+            hint="IEC 60287-2-1 4.1.2.2.4 suggests 6 to 13 K·m/W for extruded cables."
+          />
+        )}
+      </Section>
+
+) : (
       <Section title="Metallic screen or sheath">
         <Segmented
           id="scr-form"
@@ -214,9 +290,14 @@ export function CableForm({ cable, onChange }: Props) {
             { value: 'wires', label: 'Wire screen' },
             { value: 'smooth', label: 'Smooth sheath' },
             { value: 'corrugated', label: 'Corrugated' },
+            { value: 'none', label: 'None' },
           ]}
           onChange={(form) => setScr({ form })}
         />
+        {noScreen ? (
+          <p className="field-hint field-wide">No metallic screen or sheath (for example NA2XY, N2XY): no screen losses.</p>
+        ) : (
+          <>
         <SelectField
           id="scr-mat"
           label="Material"
@@ -268,8 +349,11 @@ export function CableForm({ cable, onChange }: Props) {
           placeholder="from area"
           hint="Use the datasheet value if given; it replaces the area-based resistance."
         />
+          </>
+        )}
       </Section>
 
+)}
       <Section title="Oversheath">
         <SelectField
           id="jac-mat"
@@ -309,23 +393,40 @@ export function CableForm({ cable, onChange }: Props) {
       <Section title="Built-up diameters">
         <table className="mini-table field-wide">
           <tbody>
-            {[
-              ['Over conductor screen', g.dcScreen],
-              ['Over insulation', g.Di],
-              ['Under metallic screen', g.Dunder],
-              ['Mean screen diameter d', g.dMean],
-              ['Over metallic screen Ds', g.Ds],
-              ['Overall De', g.De],
-            ].map(([k, v]) => (
+            {(three && g.threeCore
+              ? [
+                  ['Circle around conductors 2·r1', 2 * g.threeCore.r1],
+                  ['Over the laid-up cores', g.threeCore.layD],
+                  ['Under oversheath da', g.threeCore.da],
+                  ['Overall De', g.De],
+                ]
+              : noScreen
+                ? [
+                    ['Over conductor screen', g.dcScreen],
+                    ['Over insulation', g.Di],
+                    ['Under oversheath', g.Da],
+                    ['Overall De', g.De],
+                  ]
+                : [
+                    ['Over conductor screen', g.dcScreen],
+                    ['Over insulation', g.Di],
+                    ['Under metallic screen', g.Dunder],
+                    ['Mean screen diameter d', g.dMean],
+                    ['Over metallic screen Ds', g.Ds],
+                    ['Overall De', g.De],
+                  ]
+            ).map(([k, v]) => (
               <tr key={k as string}>
                 <th scope="row">{k}</th>
                 <td>{fmt(v as number, 1)} mm</td>
               </tr>
             ))}
-            <tr>
-              <th scope="row">Screen cross-section</th>
-              <td>{fmt(g.As, 1)} mm²</td>
-            </tr>
+            {!three && !noScreen && (
+              <tr>
+                <th scope="row">Screen cross-section</th>
+                <td>{fmt(g.As, 1)} mm²</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </Section>
