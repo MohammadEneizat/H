@@ -25,7 +25,7 @@ export const typeLabel = {
   ducts: 'In ducts',
   ductbank: 'Duct bank',
   air: 'Free air',
-  trench: 'Trench layout',
+  trench: 'Drawn cross-section',
 } as const;
 export const bondLabel = { both: 'Both ends bonded', single: 'Single-point bonded', cross: 'Cross-bonded' } as const;
 

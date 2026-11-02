@@ -883,6 +883,42 @@ textarea {
   gap: 10px;
   align-content: start;
 }
+.drawing-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.drawing-editable {
+  position: relative;
+  cursor: pointer;
+  border-radius: 4px;
+  outline: 1px dashed transparent;
+  outline-offset: 4px;
+  transition: outline-color 0.15s;
+}
+.drawing-editable:hover,
+.drawing-editable:focus-visible {
+  outline-color: var(--accent);
+}
+.drawing-editable:focus-visible {
+  outline: 2px solid var(--focus);
+}
+.drawing-edit-hint {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
 .drawing {
   margin: 0;
   display: grid;

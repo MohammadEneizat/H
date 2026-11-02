@@ -63,10 +63,14 @@ one together with T4 of the hottest position, which is conservative.
 
 ## Cross-section builder
 
-Choose **Trench layout** as the installation method. The **Cross-section** panel opens at
-the top of the results, with the IEC and numerical ratings above the drawing (on a phone,
-use *Go to the drawing* or *See drawing* in the bar at the top). Start from a template or
-from scratch, then add, move, resize and reorder objects:
+To edit the drawing, click **✎ Edit drawing** (next to the installation drawing or the PDF
+button), click the installation drawing itself, or choose **✎ Draw your own cross-section**
+as the installation method. Direct buried cables, ducts and duct banks open as they are
+(uniform soil, the duct bank as a concrete rectangle), so the rating does not change until
+you edit something. The **Cross-section** panel opens at the top of the results, with the
+IEC and numerical ratings above the drawing (on a phone, use *Go to the drawing* or *See
+drawing* in the bar at the top). Start from what you had, from a template or from scratch,
+then add, move, resize and reorder objects:
 
 - **Ground layers** from the surface down (topsoil, clay, sand…), each with its own
   thermal resistivity. The bottom layer continues downwards. Drag a boundary to change a

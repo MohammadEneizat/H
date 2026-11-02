@@ -1,5 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { calculateTemperature, numericOptions, type CableSpec, type InstallationSpec, type RatingResult } from '../engine';
+import {
+  calculateTemperature,
+  layoutFromInstallation,
+  numericOptions,
+  type CableSpec,
+  type InstallationSpec,
+  type RatingResult,
+} from '../engine';
 import { buildPdfReport } from '../report/pdf';
 import { calcSections, summaryChips, type Row } from '../report/sections';
 import { CableSection, InstallationView } from './Drawing';
@@ -129,6 +136,12 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
 
   const chips = summaryChips(inst, r);
   const { sections, lambda } = calcSections(inst, r);
+  // Direct buried, ducts and duct banks can be opened in the cross-section editor as they are
+  const canEdit = inst.type === 'direct' || inst.type === 'ducts' || inst.type === 'ductbank';
+  const editDrawing = () => {
+    onInstChange({ ...inst, type: 'trench', trench: layoutFromInstallation(inst) });
+    window.setTimeout(() => document.getElementById('cross-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+  };
 
   const over = temp && temp.ok && temp.conductor > cable.maxTemp_C + 1e-6;
 
@@ -158,6 +171,11 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
             <button type="button" className="btn btn-primary" onClick={makeReport} disabled={report.busy}>
               {report.busy ? 'Preparing PDF…' : 'Download PDF report'}
             </button>
+            {canEdit && (
+              <button type="button" className="btn" onClick={editDrawing}>
+                ✎ Edit drawing
+              </button>
+            )}
             <span className="report-msg" role="status" aria-live="polite">
               {report.busy ? '' : report.msg}
             </span>
@@ -325,8 +343,37 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
         </div>
         {!trench && (
           <div className="drawing-cell drawing-wide">
-            <h2 className="drawing-title">Installation</h2>
-            <InstallationView cable={cable} inst={inst} result={r} pal={pal} />
+            <div className="drawing-head">
+              <h2 className="drawing-title">Installation</h2>
+              {canEdit && (
+                <button type="button" className="btn btn-primary" onClick={editDrawing}>
+                  ✎ Edit drawing
+                </button>
+              )}
+            </div>
+            {canEdit ? (
+              <div
+                className="drawing-editable"
+                role="button"
+                tabIndex={0}
+                aria-label="Edit this cross-section in the drawing editor"
+                title="Click to edit this cross-section"
+                onClick={editDrawing}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    editDrawing();
+                  }
+                }}
+              >
+                <InstallationView cable={cable} inst={inst} result={r} pal={pal} />
+                <span className="drawing-edit-hint" aria-hidden="true">
+                  ✎ Click to edit
+                </span>
+              </div>
+            ) : (
+              <InstallationView cable={cable} inst={inst} result={r} pal={pal} />
+            )}
           </div>
         )}
       </section>

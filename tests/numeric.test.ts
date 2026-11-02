@@ -5,6 +5,7 @@ import {
   circleShape,
   exactInfluence,
   layoutCircuits,
+  layoutFromInstallation,
   migrateTrench,
   numericOptions,
   numericRating,
@@ -113,6 +114,16 @@ describe('trench layouts', () => {
 
 describe('flexible cross-section', () => {
   const base = (): InstallationSpec => TRENCH_TEMPLATES[0].apply({ ...DEFAULT_INSTALLATION });
+
+  it('opens an installation in the editor without changing its rating', () => {
+    for (const type of ['direct', 'ducts', 'ductbank'] as const) {
+      const inst: InstallationSpec = { ...DEFAULT_INSTALLATION, type, circuits: [] };
+      const before = calculateRating(MV, inst);
+      const after = calculateRating(MV, { ...inst, type: 'trench', trench: layoutFromInstallation(inst) });
+      expect(before.ok && after.ok).toBe(true);
+      expect(Math.abs(after.I - before.I) / before.I).toBeLessThan(type === 'ductbank' ? 0.01 : 1e-9);
+    }
+  });
 
   it('places every circuit for drawing even when the rating fails', () => {
     const inst = base();

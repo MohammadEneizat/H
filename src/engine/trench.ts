@@ -503,6 +503,28 @@ export const TRENCH_TEMPLATES: TrenchTemplate[] = [
 ];
 
 /** A plain cross-section to start from: the current circuit in a sand-bedded trench. */
+/**
+ * An editable layout of the installation as it is now (direct buried, ducts or duct bank):
+ * uniform ground with the entered soil resistivity, and the duct bank as a concrete
+ * rectangle. Circuits, ducts and heat sources are kept, so the rating does not change.
+ */
+export function layoutFromInstallation(inst: InstallationSpec): TrenchSpec {
+  const shapes: GroundShape[] = [];
+  if (inst.type === 'ductbank') {
+    const b = inst.bank;
+    const cx = (inst.mainX_m ?? 0) + (b.centreX_m ?? 0);
+    const cy = b.centreDepth_m ?? inst.depth_m;
+    shapes.push(rectShape('Duct bank', 'concrete', cx, Math.max(0.01, cy - b.height_m / 2), b.width_m, b.height_m, b.concreteRho));
+  }
+  return {
+    surface: 'grass',
+    ducted: inst.type === 'ducts' || inst.type === 'ductbank',
+    layers: [layer('Native soil', 'clay', 5, inst.soilRho)],
+    shapes,
+    slabs: [],
+  };
+}
+
 export function defaultTrench(inst: InstallationSpec): TrenchSpec {
   const d = Math.max(inst.depth_m + 0.25, 0.9);
   return {

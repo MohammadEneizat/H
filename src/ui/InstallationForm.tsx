@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   AIR_CONSTANTS,
-  defaultTrench,
+  layoutFromInstallation,
   DUCTS,
   JACKETS,
   type AirArrangement,
@@ -49,10 +49,16 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             { value: 'ducts', label: 'Ducts' },
             { value: 'ductbank', label: 'Duct bank' },
             { value: 'air', label: 'Free air' },
-            { value: 'trench', label: 'Trench layout' },
+            { value: 'trench', label: '✎ Draw your own cross-section' },
           ]}
-          onChange={(type) => set(type === 'trench' && !i.trench ? { type, trench: defaultTrench(i) } : { type })}
+          onChange={(type) => set(type === 'trench' && !i.trench ? { type, trench: layoutFromInstallation(i) } : { type })}
         />
+        {!trench && i.type !== 'air' && (
+          <p className="field-hint field-wide">
+            To move cables by hand, or add trenches, backfill, other cables or heat sources, choose{' '}
+            <strong>Draw your own cross-section</strong>, or click the installation drawing in the results.
+          </p>
+        )}
         {trench && (
           <div className="field-wide trench-hint">
             <p className="field-hint">
