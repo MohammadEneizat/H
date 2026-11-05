@@ -7,6 +7,7 @@ import {
   deriveGeometry,
   layerBoundaries,
   layoutCircuits,
+  parseDxf,
   placeInConduits,
   polygonShape,
   rectShape,
@@ -18,6 +19,7 @@ import {
   type CableSpec,
   type CircuitSpec,
   type ConduitSpec,
+  type DxfDoc,
   type GroundMaterial,
   type GroundShape,
   type HeatSource,
@@ -27,7 +29,9 @@ import {
   type TrenchSlab,
   type TrenchSpec,
 } from '../engine';
-import { CableGlyph, GroundDefs, HeatLegend, HeatOverlay, metalOf } from './Drawing';
+import { CableGlyph, DC_PLUS, GroundDefs, HeatLegend, HeatOverlay, metalOf } from './Drawing';
+import { DxfImport } from './DxfImport';
+import sampleDxf from '../samples/pv-dc-trench.dxf?raw';
 import { NumField, SelectField, Segmented, TextField, Toggle } from './fields';
 import { amps, fmt } from './format';
 import { analyticField, gridMax, heatLayer, isoLevels, niceStep, sampleField, type FieldSourceLike, type HeatLayer, type Region } from './heatmap';
@@ -219,6 +223,30 @@ function trenchPoints(s: GroundShape, top: number, bottom: number): string {
 }
 
 /** The cross-section drawing; interactive when `drag` is given. */
+/** The imported DXF drawing as thin lines. */
+function Underlay({ u, pal, sw, fs }: { u: NonNullable<TrenchSpec['underlay']>; pal: Palette; sw: number; fs: number }) {
+  const d = useMemo(() => {
+    let out = '';
+    for (let i = 0; i + 3 < u.lines.length; i += 4) out += `M${u.lines[i]} ${u.lines[i + 1]}L${u.lines[i + 2]} ${u.lines[i + 3]}`;
+    return out;
+  }, [u]);
+  const circles = [];
+  for (let i = 0; i + 2 < u.circles.length; i += 3) circles.push([u.circles[i], u.circles[i + 1], u.circles[i + 2]]);
+  return (
+    <g pointerEvents="none" opacity={0.75}>
+      <path d={d} fill="none" stroke={pal.ink} strokeWidth={sw * 0.7} strokeLinecap="round" />
+      {circles.map(([x, y, r], i) => (
+        <circle key={i} cx={x} cy={y} r={r} fill="none" stroke={pal.ink} strokeWidth={sw * 0.5} />
+      ))}
+      {u.texts.map((t, i) => (
+        <text key={`t${i}`} x={t.x} y={t.y} fontSize={Math.min(t.h, fs * 1.2)} fill={pal.ink2}>
+          {t.t}
+        </text>
+      ))}
+    </g>
+  );
+}
+
 export function TrenchSvg({
   inst,
   scene,
@@ -227,6 +255,7 @@ export function TrenchSvg({
   idPrefix,
   showHeat,
   showLabels = true,
+  showUnderlay = true,
   drag,
 }: {
   inst: InstallationSpec;
@@ -236,6 +265,8 @@ export function TrenchSvg({
   idPrefix: string;
   showHeat: boolean;
   showLabels?: boolean;
+  /** Draw the imported DXF drawing over the ground */
+  showUnderlay?: boolean;
   drag?: DragApi;
 }) {
   const t = inst.trench!;
@@ -319,14 +350,8 @@ export function TrenchSvg({
 
   // Circuit labels: positions first, so other labels can keep clear of them
   const circLabels = (() => {
-    const order = scene.groups
-      .map((g, gi) => ({ gi, gx: g.conduit ? g.conduit.x : g.positions.reduce((a, p) => a + p.x, 0) / g.positions.length }))
-      .sort((a, b) => a.gx - b.gx);
-    const below = new Set<number>();
-    order.forEach((o, k) => {
-      if (k > 0 && o.gx - order[k - 1].gx < fs * 9 && !below.has(order[k - 1].gi)) below.add(o.gi);
-    });
-    return scene.groups.map((g, gi) => {
+    type Box = { x0: number; x1: number; y0: number; y1: number };
+    const items = scene.groups.map((g, gi) => {
       const xs = g.positions.map((p) => p.x);
       const ys = g.positions.map((p) => p.y);
       const bx0 = Math.min(...xs) - g.D / 2 - sw * 6;
@@ -335,16 +360,36 @@ export function TrenchSvg({
       const bh = Math.max(...ys) - Math.min(...ys) + g.D + sw * 12;
       const k = g.conduit;
       const gx = k ? k.x : xs.reduce((a, b) => a + b, 0) / xs.length;
-      const ly = k
-        ? below.has(gi)
-          ? k.y + k.Do / 2 + fs * 1.1
-          : k.y - k.Do / 2 - fs * 0.4
-        : below.has(gi)
-          ? by0 + bh + fs * 1.1
-          : by0 - fs * 0.4;
+      const top = (k ? k.y - k.Do / 2 : by0) - fs * 0.4;
+      const bottom = (k ? k.y + k.Do / 2 : by0 + bh) + fs * 1.1;
       const text = Number.isFinite(g.I) ? `${g.name} · ${amps(g.I)} A · ${fmt(g.temp, 0)} °C` : g.name;
       const tw = text.length * fs * 0.56;
-      return { gi, bx0, by0, bw, bh, gx, ly, text, box: { x0: gx - tw / 2, x1: gx + tw / 2, y0: ly - fs, y1: ly + fs * 0.2 } };
+      return { gi, bx0, by0, bw, bh, gx, top, bottom, text, tw };
+    });
+    // Place labels left to right, above or below their circuit, in further rows where they would collide
+    const placed: Box[] = items.map((it) => ({ x0: it.bx0, x1: it.bx0 + it.bw, y0: it.by0, y1: it.by0 + it.bh }));
+    const hit = (b: Box) => placed.some((p) => !(b.x1 < p.x0 || b.x0 > p.x1 || b.y1 < p.y0 || b.y0 > p.y1));
+    const ly = new Map<number, number>();
+    [...items]
+      .sort((a, b) => a.gx - b.gx)
+      .forEach((it, n) => {
+        const sides = n % 2 ? (['below', 'above'] as const) : (['above', 'below'] as const);
+        let found: number | null = null;
+        for (let row = 0; row < 6 && found === null; row++)
+          for (const side of sides) {
+            const y = side === 'above' ? it.top - row * fs * 1.15 : it.bottom + row * fs * 1.15;
+            const box = { x0: it.gx - it.tw / 2, x1: it.gx + it.tw / 2, y0: y - fs, y1: y + fs * 0.2 };
+            if (!hit(box)) {
+              found = y;
+              placed.push(box);
+              break;
+            }
+          }
+        ly.set(it.gi, found ?? it.top);
+      });
+    return items.map((it) => {
+      const y = ly.get(it.gi)!;
+      return { ...it, ly: y, box: { x0: it.gx - it.tw / 2, x1: it.gx + it.tw / 2, y0: y - fs, y1: y + fs * 0.2 } };
     });
   })();
   const clear = (x: number, y: number, text: string, size: number) => {
@@ -505,6 +550,8 @@ export function TrenchSvg({
           </g>
         );
       })}
+      {/* imported DXF drawing */}
+      {showUnderlay && t.underlay && <Underlay u={t.underlay} pal={pal} sw={sw} fs={fs} />}
       {/* other heat sources */}
       {(inst.heatSources ?? []).map((hs, _k, all) => {
         const isSel = sel?.kind === 'source' && sel.id === hs.id;
@@ -560,7 +607,18 @@ export function TrenchSvg({
                   <circle cx={p.x} cy={p.y} r={(g.ductInnerD ?? g.ductD * 0.9) / 2} fill={pal.air} />
                 </>
               )}
-              <CableGlyph x={p.x} y={p.y} geo={g.geo} metal={g.metal} cond={g.cond} hot={gi === 0 && i === g.hottest} sw={sw} pal={pal} id={id} />
+              <CableGlyph
+                x={p.x}
+                y={p.y}
+                geo={g.geo}
+                metal={g.metal}
+                cond={g.cond}
+                hot={gi === 0 && i === g.hottest}
+                sw={sw}
+                pal={pal}
+                id={id}
+                sheath={g.positions.length === 2 && i === 0 ? DC_PLUS : undefined}
+              />
             </g>
           ))}
         </g>
@@ -694,6 +752,10 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
   const [template, setTemplate] = useState(TRENCH_TEMPLATES[0].id);
   const [snap, setSnap] = useState('0.01');
   const [view, setView] = useState<View>({ zoom: 1, panX: 0, panY: 0 });
+  const [dxf, setDxf] = useState<{ name: string; doc: DxfDoc } | null>(null);
+  const [dxfMsg, setDxfMsg] = useState('');
+  const [showDxf, setShowDxf] = useState(true);
+  const fileRef = useRef<HTMLInputElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const t = inst.trench;
@@ -1210,14 +1272,59 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
       return { zoom: z2, panX: cn.x - c0.x, panY: cn.y - c0.y };
     });
 
+  // --- DXF import
+  const openDxf = (name: string, text: string) => {
+    try {
+      const doc = parseDxf(text);
+      setDxf({ name, doc });
+      setDxfMsg('');
+    } catch (err) {
+      setDxf(null);
+      setDxfMsg(err instanceof Error ? err.message : 'The DXF could not be read.');
+    }
+  };
+  const onDxfFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (!/\.dxf$/i.test(f.name)) {
+      setDxfMsg('Choose a .dxf file. DWG drawings need to be saved as DXF first.');
+      return;
+    }
+    openDxf(f.name, await f.text());
+  };
+
   // --- inspector
   const n0 = (v: number | null) => (v === null ? 0 : v);
   let title = 'Nothing selected';
   let inspector: React.ReactNode = (
-    <p className="empty-note">
-      Select an item here or in the drawing. Drag items to move them, drag the square handles to resize, and drag
-      empty ground to pan. Arrow keys move the selected item; Ctrl+Z undoes, Ctrl+D duplicates, Delete removes.
-    </p>
+    <>
+      <p className="empty-note">
+        Select an item here or in the drawing. Drag items to move them, drag the square handles to resize, and drag
+        empty ground to pan. Arrow keys move the selected item; Ctrl+Z undoes, Ctrl+D duplicates, Delete removes.
+      </p>
+      <div className="dxf-side">
+        {t.underlay ? (
+          <>
+            <p className="field-hint">
+              Drawing from <strong>{t.underlay.name}</strong> shown underneath ({(t.underlay.lines.length / 4).toLocaleString('en-GB')} lines).
+            </p>
+            <button type="button" className="btn btn-quiet" onClick={() => setT({ underlay: undefined })}>
+              Remove the drawing
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="field-hint">
+              Have a trench section in CAD? <strong>Import DXF…</strong> reads its regions, cables and conduits.
+            </p>
+            <button type="button" className="btn btn-quiet" onClick={() => openDxf('pv-dc-trench.dxf (sample)', sampleDxf)}>
+              Try the sample drawing
+            </button>
+          </>
+        )}
+      </div>
+    </>
   );
   if (sel?.kind === 'layer') {
     const l = t.layers.find((x) => x.id === sel.id);
@@ -1426,6 +1533,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
       const kc = conduitOfCircuit(i);
       const cab = i === 0 ? cable : (c!.cable ?? cable);
       const threeCore = cab.cores === 3;
+      const dcCirc = cab.system === 'dc' && !threeCore;
       const placement = kc ? `k:${kc.id}` : ducted ? 'ducts' : 'direct';
       const setPlacement = (v: string) => {
         if (v.startsWith('k:')) return placeCircuit(i, v.slice(2));
@@ -1437,7 +1545,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
         <div className="field-grid">
           <p className="field-hint field-wide">
             {i === 0 ? 'Main circuit. Cable and bonding are set in the Cable and Installation tabs.' : 'Cable, bonding and load are set in the Circuits tab.'}
-            {threeCore ? ' Three-core cable: one cable carries the circuit.' : ''}
+            {threeCore ? ' Three-core cable: one cable carries the circuit.' : dcCirc ? ' DC circuit: two cables, + and −.' : ''}
           </p>
           <SelectField
             id="ci-place"
@@ -1463,22 +1571,37 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           <NumField id="ci-d" label="Depth to centre" unit="m" value={i === 0 ? md : c!.depth_m} onChange={(v) => setCircuit(i, { depth_m: n0(v) })} />
           {!threeCore && (
             <>
-          <Segmented
-            id="ci-form"
-            label="Formation"
-            value={i === 0 ? inst.formation : c!.formation}
-            options={[
-              { value: 'trefoil', label: 'Trefoil' },
-              { value: 'flat', label: 'Flat' },
-            ]}
-            onChange={(formation) => setCircuit(i, { formation })}
-          />
-          <Toggle
-            id="ci-rot"
-            label={(i === 0 ? inst.formation : c!.formation) === 'flat' ? 'Vertical (stacked)' : 'Point down'}
-            checked={!!(i === 0 ? inst.rotated : c!.rotated)}
-            onChange={(rotated) => setCircuit(i, { rotated })}
-          />
+          {dcCirc ? (
+            <Segmented
+              id="ci-form"
+              label="DC cables + and −"
+              value={(i === 0 ? inst.rotated : c!.rotated) ? 'stacked' : 'side'}
+              options={[
+                { value: 'side', label: 'Side by side' },
+                { value: 'stacked', label: 'One above the other' },
+              ]}
+              onChange={(v) => setCircuit(i, { formation: 'flat', rotated: v === 'stacked' })}
+            />
+          ) : (
+            <>
+              <Segmented
+                id="ci-form"
+                label="Formation"
+                value={i === 0 ? inst.formation : c!.formation}
+                options={[
+                  { value: 'trefoil', label: 'Trefoil' },
+                  { value: 'flat', label: 'Flat' },
+                ]}
+                onChange={(formation) => setCircuit(i, { formation })}
+              />
+              <Toggle
+                id="ci-rot"
+                label={(i === 0 ? inst.formation : c!.formation) === 'flat' ? 'Vertical (stacked)' : 'Point down'}
+                checked={!!(i === 0 ? inst.rotated : c!.rotated)}
+                onChange={(rotated) => setCircuit(i, { rotated })}
+              />
+            </>
+          )}
           <Toggle id="ci-touch" label={ducted ? 'Ducts touching' : 'Cables touching'} checked={i === 0 ? inst.touching : c!.touching} onChange={(touching) => setCircuit(i, { touching })} />
           {!(i === 0 ? inst.touching : c!.touching) && (
             <NumField id="ci-s" label="Axial spacing" unit="mm" value={i === 0 ? inst.spacing_mm : c!.spacing_mm} onChange={(v) => setCircuit(i, { spacing_mm: n0(v) })} />
@@ -1560,6 +1683,10 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           >
             Use template
           </button>
+          <button type="button" className="btn" onClick={() => fileRef.current?.click()} title="Read the trench section from a DXF drawing">
+            Import DXF…
+          </button>
+          <input ref={fileRef} type="file" accept=".dxf,image/vnd.dxf,application/dxf" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={onDxfFile} />
         </div>
         <div className="tool-group">
           <button type="button" className="btn btn-quiet" onClick={undo} disabled={!canUndo} aria-label="Undo" title="Undo (Ctrl+Z)">
@@ -1649,6 +1776,32 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           )}
         </div>
       )}
+      {dxfMsg && (
+        <div className={`dxf-msg${dxf ? '' : ' is-note'}`} role="status">
+          <p>{dxfMsg}</p>
+          <button type="button" className="btn btn-quiet" onClick={() => setDxfMsg('')}>
+            Close
+          </button>
+        </div>
+      )}
+      {dxf && (
+        <DxfImport
+          name={dxf.name}
+          doc={dxf.doc}
+          cable={cable}
+          inst={inst}
+          pal={pal}
+          onCancel={() => setDxf(null)}
+          onApply={(next, summary) => {
+            onChange(next);
+            setDxf(null);
+            setSel(null);
+            setShowDxf(true);
+            setView({ zoom: 1, panX: 0, panY: 0 });
+            setDxfMsg(`${summary} Check the fill of each region in the object list, and the cable in the Cable tab.`);
+          }}
+        />
+      )}
       <div className="trench-body">
         <div
           className="trench-canvas"
@@ -1666,7 +1819,17 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
           }}
         >
           {scene ? (
-            <TrenchSvg inst={inst} scene={scene} heat={heat} pal={pal} idPrefix={idPrefix} showHeat={showHeat} showLabels={showLabels} drag={{ start, selection: sel }} />
+            <TrenchSvg
+              inst={inst}
+              scene={scene}
+              heat={heat}
+              pal={pal}
+              idPrefix={idPrefix}
+              showHeat={showHeat}
+              showLabels={showLabels}
+              showUnderlay={showDxf}
+              drag={{ start, selection: sel }}
+            />
           ) : (
             <div className="drawing-empty">Complete the cable and installation inputs to see the cross-section.</div>
           )}
@@ -1696,6 +1859,7 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
             <div className="tool-group">
               <Toggle id="tr-heat" label="Temperatures" checked={showHeat} onChange={setShowHeat} />
               <Toggle id="tr-labels" label="Labels" checked={showLabels} onChange={setShowLabels} />
+              {t.underlay && <Toggle id="tr-dxf" label="DXF drawing" checked={showDxf} onChange={setShowDxf} />}
             </div>
             <span className={`trench-status${num.status === 'error' ? ' is-bad' : ''}`} role="status">
               {numText}

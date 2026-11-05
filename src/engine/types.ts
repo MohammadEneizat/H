@@ -78,6 +78,11 @@ export interface CableSpec {
    * metallic screen or armour (for example NYY, NAYY, N2XY, NA2XY).
    */
   cores?: 1 | 3;
+  /**
+   * 'ac' (default): three-phase, a circuit is three single-core cables or one three-core cable.
+   * 'dc': a circuit is two single-core cables, + and − (IEC 60287-1-1 1.4.1.2, up to 5 kV).
+   */
+  system?: 'ac' | 'dc';
   /** Three-core cables */
   threeCore?: {
     /** Shape of the conductors; for sector-shaped ones the conductor diameter is the equivalent round diameter dx */
@@ -224,6 +229,13 @@ export interface TrenchSpec {
   slabs: TrenchSlab[];
   /** Main circuit in ducts (one per cable, using the duct settings) */
   ducted: boolean;
+  /** A DXF drawing shown under the shapes (mm, y = depth down) */
+  underlay?: {
+    name: string;
+    lines: number[];
+    circles: number[];
+    texts: { x: number; y: number; h: number; t: string }[];
+  };
 }
 
 /** Duct size for one circuit. */
@@ -454,6 +466,8 @@ export interface CircuitResult {
   hottest: number;
   /** 1 or 3 cores per cable */
   cores: 1 | 3;
+  /** DC circuit (two cables, + and −) */
+  isDC?: boolean;
   /** Where the cables are drawn (mm): one per cable, so one point for a three-core cable */
   cablePositions: { x: number; y: number }[];
   /** The shared conduit holding this circuit */

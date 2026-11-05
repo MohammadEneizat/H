@@ -182,50 +182,79 @@ export function CircuitsForm({ inst, cable, library, onChange }: Props) {
               />
             </>
           )}
-          <Segmented
-            id={`c-${c.id}-formation`}
-            label="Formation"
-            value={c.formation}
-            options={[
-              { value: 'trefoil', label: 'Trefoil' },
-              { value: 'flat', label: 'Flat' },
-            ]}
-            onChange={(formation) => setCircuit(c.id, { formation })}
-          />
-          <Toggle
-            id={`c-${c.id}-touching`}
-            label={inDucts ? 'Ducts touching' : 'Cables touching'}
-            checked={c.touching}
-            onChange={(touching) => setCircuit(c.id, { touching })}
-          />
-          {!c.touching && (
-            <NumField
-              id={`c-${c.id}-spacing`}
-              label="Axial spacing"
-              unit="mm"
-              value={c.spacing_mm}
-              onChange={(v) => setCircuit(c.id, { spacing_mm: num(v) })}
-            />
-          )}
-          {c.formation === 'flat' && (
-            <Toggle
-              id={`c-${c.id}-transposed`}
-              label="Cables regularly transposed"
-              checked={c.transposed}
-              onChange={(transposed) => setCircuit(c.id, { transposed })}
-            />
-          )}
-          <Segmented
-            id={`c-${c.id}-bonding`}
-            label="Screen bonding"
-            value={c.bonding}
-            options={[
-              { value: 'both', label: 'Both ends' },
-              { value: 'single', label: 'Single point' },
-              { value: 'cross', label: 'Cross-bonded' },
-            ]}
-            onChange={(bonding) => setCircuit(c.id, { bonding })}
-          />
+          {(() => {
+            const cab = c.cable ?? cable;
+            const dcC = cab.system === 'dc' && cab.cores !== 3;
+            const three = cab.cores === 3;
+            const screenless = dcC || three || cab.screen.form === 'none';
+            return (
+              <>
+                {three ? (
+                  <p className="field-hint field-wide">One three-core cable.</p>
+                ) : dcC ? (
+                  <Segmented
+                    id={`c-${c.id}-formation`}
+                    label="DC cables + and −"
+                    value={c.rotated ? 'stacked' : 'side'}
+                    options={[
+                      { value: 'side', label: 'Side by side' },
+                      { value: 'stacked', label: 'One above the other' },
+                    ]}
+                    onChange={(v) => setCircuit(c.id, { formation: 'flat', rotated: v === 'stacked' })}
+                  />
+                ) : (
+                  <Segmented
+                    id={`c-${c.id}-formation`}
+                    label="Formation"
+                    value={c.formation}
+                    options={[
+                      { value: 'trefoil', label: 'Trefoil' },
+                      { value: 'flat', label: 'Flat' },
+                    ]}
+                    onChange={(formation) => setCircuit(c.id, { formation })}
+                  />
+                )}
+                {!three && (
+                  <Toggle
+                    id={`c-${c.id}-touching`}
+                    label={inDucts ? 'Ducts touching' : 'Cables touching'}
+                    checked={c.touching}
+                    onChange={(touching) => setCircuit(c.id, { touching })}
+                  />
+                )}
+                {!three && !c.touching && (
+                  <NumField
+                    id={`c-${c.id}-spacing`}
+                    label="Axial spacing"
+                    unit="mm"
+                    value={c.spacing_mm}
+                    onChange={(v) => setCircuit(c.id, { spacing_mm: num(v) })}
+                  />
+                )}
+                {!dcC && !three && c.formation === 'flat' && (
+                  <Toggle
+                    id={`c-${c.id}-transposed`}
+                    label="Cables regularly transposed"
+                    checked={c.transposed}
+                    onChange={(transposed) => setCircuit(c.id, { transposed })}
+                  />
+                )}
+                {!screenless && (
+                  <Segmented
+                    id={`c-${c.id}-bonding`}
+                    label="Screen bonding"
+                    value={c.bonding}
+                    options={[
+                      { value: 'both', label: 'Both ends' },
+                      { value: 'single', label: 'Single point' },
+                      { value: 'cross', label: 'Cross-bonded' },
+                    ]}
+                    onChange={(bonding) => setCircuit(c.id, { bonding })}
+                  />
+                )}
+              </>
+            );
+          })()}
           <Segmented
             id={`c-${c.id}-load`}
             label="Load"

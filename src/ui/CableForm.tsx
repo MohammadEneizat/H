@@ -47,6 +47,22 @@ export function CableForm({ cable, onChange }: Props) {
       <Section title="Cable">
         <TextField id="cable-name" label="Name" value={c.name} onChange={(name) => set({ name })} />
         <Segmented
+          id="cable-system"
+          label="Used in"
+          value={c.system === 'dc' ? 'dc' : 'ac'}
+          options={[
+            { value: 'ac', label: 'AC three-phase' },
+            { value: 'dc', label: 'DC (+ and −)' },
+          ]}
+          onChange={(v) => set(v === 'dc' ? { system: 'dc', cores: 1 } : { system: 'ac' })}
+        />
+        {c.system === 'dc' ? (
+          <p className="field-hint field-wide">
+            A DC circuit is two single-core cables, + and −, for example PV string or main DC cables (IEC 60287-1-1
+            1.4.1.2, up to 5 kV). Only the DC resistance heats the cable.
+          </p>
+        ) : (
+        <Segmented
           id="cable-cores"
           label="Cable type"
           value={three ? '3' : '1'}
@@ -56,6 +72,7 @@ export function CableForm({ cable, onChange }: Props) {
           ]}
           onChange={(v) => set(v === '3' ? { cores: 3, threeCore: tc } : { cores: 1 })}
         />
+        )}
         {three && (
           <p className="field-hint field-wide">
             Three-core cables are rated without a metallic screen or armour, as for NYY, NAYY, N2XY and NA2XY. One
@@ -146,6 +163,7 @@ export function CableForm({ cable, onChange }: Props) {
           onChange={(v) => setCond({ R20_ohm_km: num(v) })}
           hint="Maximum value from the datasheet (IEC 60228)."
         />
+        {c.system !== 'dc' && (
         <Overrides label="Datasheet AC resistance and ks, kp">
           <NumField
             id="cond-rac"
@@ -174,6 +192,7 @@ export function CableForm({ cable, onChange }: Props) {
             placeholder={`${dflt.kp} (Table 2)`}
           />
         </Overrides>
+        )}
       </Section>
 
       <Section title="Insulation">

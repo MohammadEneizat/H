@@ -50,6 +50,9 @@ export interface LayerInfo {
   rOut: number;
 }
 
+/** Oversheath of the + cable of a DC circuit */
+export const DC_PLUS = '#b52a22';
+
 /** Core colours of a three-core cable (HD 308: brown, black, grey). */
 export const CORE_COLOURS: [string, string][] = [
   ['#8b5a36', '#6a4227'],
@@ -753,6 +756,7 @@ export function CableGlyph({
   sw,
   pal,
   id,
+  sheath,
 }: {
   x: number;
   y: number;
@@ -763,6 +767,8 @@ export function CableGlyph({
   sw: number;
   pal: Palette;
   id: (s: string) => string;
+  /** Solid oversheath colour (red for the + cable of a DC circuit) */
+  sheath?: string;
 }) {
   const g = geo;
   const De = Math.max(g.De, g.DeBuilt);
@@ -787,7 +793,7 @@ export function CableGlyph({
         cx={x}
         cy={y}
         r={De / 2}
-        fill={`url(#${id('gjacket')})`}
+        fill={sheath ?? `url(#${id('gjacket')})`}
         stroke={hot ? pal.accent : pal.jacketEdge}
         strokeWidth={hot ? sw * 3 : sw * 0.8}
       />
@@ -937,6 +943,7 @@ function CircuitShapes({
                 sw={sw}
                 pal={pal}
                 id={id}
+                sheath={gr.positions.length === 2 && i === 0 ? DC_PLUS : undefined}
               />
             ) : (
               <circle cx={p.x} cy={p.y} r={Math.max(gr.geo.De, gr.geo.DeBuilt) / 2} fill={pal.jacket[1]} />
@@ -1123,10 +1130,11 @@ export function InstallationDetailSvg({
         </text>
       )}
       {!scene.many &&
-        main.positions.length === 3 &&
+        main.positions.length >= 2 &&
         main.positions.map((p, i) => {
-          const gx = main.positions.reduce((a, q) => a + q.x, 0) / 3;
-          const gy = main.positions.reduce((a, q) => a + q.y, 0) / 3;
+          const k = main.positions.length;
+          const gx = main.positions.reduce((a, q) => a + q.x, 0) / k;
+          const gy = main.positions.reduce((a, q) => a + q.y, 0) / k;
           let ux = p.x - gx;
           let uy = p.y - gy;
           const len = Math.hypot(ux, uy);
@@ -1149,7 +1157,7 @@ export function InstallationDetailSvg({
               fill={pal.ink}
               {...halo}
             >
-              {['L1', 'L2', 'L3'][i]}
+              {(main.positions.length === 2 ? ['+', '−'] : ['L1', 'L2', 'L3'])[i]}
             </text>
           );
         })}

@@ -7,7 +7,7 @@ import {
   type CircuitSpec,
   type InstallationSpec,
 } from './engine';
-import { DEFAULT_INSTALLATION, EXAMPLE_CABLES } from './engine/presets';
+import { DEFAULT_INSTALLATION, EXAMPLE_CABLES, TECSUN_SIZES, tecsunCable } from './engine/presets';
 import { CableForm } from './ui/CableForm';
 import { CircuitsForm } from './ui/CircuitsForm';
 import { InstallationForm } from './ui/InstallationForm';
@@ -167,6 +167,7 @@ export function App() {
   }, []);
   const [library, setLibrary] = useState<CableSpec[]>(initial.library);
   const [tab, setTab] = useState<Tab>('cable');
+  const [tecsun, setTecsun] = useState(6);
   const [message, setMessage] = useState<string>('');
   const [paste, setPaste] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
@@ -323,6 +324,38 @@ export function App() {
                       ))}
                     </ul>
                   )}
+                </section>
+                <section className="form-section">
+                  <header className="form-section-head">
+                    <h3>Prysmian TECSUN (PV) H1Z2Z2-K</h3>
+                  </header>
+                  <p className="empty-note">
+                    Solar DC cable, tinned copper, 1/1 kV AC, 1.5 kV DC. Conductor and cable diameters and DC resistance
+                    from the datasheet (2024-11-19); insulation and sheath split typical. Loads as a DC cable.
+                  </p>
+                  <div className="btn-row tecsun-row">
+                    <label htmlFor="tecsun-size" className="sr-only">
+                      Size
+                    </label>
+                    <select id="tecsun-size" value={tecsun} onChange={(e) => setTecsun(Number(e.target.value))}>
+                      {TECSUN_SIZES.map((t) => (
+                        <option key={t.area} value={t.area}>
+                          1×{t.area} mm² · ⌀ {((t.odMin + t.odMax) / 2).toFixed(1)} mm · {t.R20} Ω/km
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        setCable(tecsunCable(tecsun));
+                        setTab('cable');
+                        setMessage(`Loaded TECSUN 1×${tecsun} mm²`);
+                      }}
+                    >
+                      Load
+                    </button>
+                  </div>
                 </section>
                 <section className="form-section">
                   <header className="form-section-head">

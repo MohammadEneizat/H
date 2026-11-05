@@ -36,6 +36,8 @@ export function summaryChips(inst: InstallationSpec, r: RatingResult): string[] 
       ? AIR_CONSTANTS[inst.air.arrangement].label
       : r.geometry.cores === 3
         ? 'Three-core cable'
+        : r.positions.length === 2
+          ? `DC + and −, ${inst.rotated ? 'one above the other' : 'side by side'}${inst.touching ? ', touching' : `, ${fmt(inst.spacing_mm, 0)} mm`}`
         : `${inst.formation === 'trefoil' ? 'Trefoil' : 'Flat'}, ${inst.touching ? 'touching' : `${fmt(inst.spacing_mm, 0)} mm`}`,
     ...(r.geometry.cores === 3 || !Number.isFinite(r.sheath.Rs20) ? [] : [bondLabel[inst.bonding]]),
     ...(inst.type === 'trench' && inst.mainConduit && (inst.conduits ?? []).some((k) => k.id === inst.mainConduit)
@@ -56,7 +58,14 @@ export function calcSections(inst: InstallationSpec, r: RatingResult): { section
   const t4 = r.thermal.t4;
   const perKm = (v: number) => sig(v * 1000, 4);
 
-  const conductor: Row[] = [
+  const isDC = r.positions.length === 2;
+  const conductor: Row[] = isDC
+    ? [
+        ['DC resistance at 20 °C', 'R0', perKm(c.R0), 'Ω/km', '2.1.1'],
+        [`DC resistance at ${fmt(r.temperatures.conductor, 1)} °C`, 'R′', perKm(c.Rdc), 'Ω/km', '2.1.1'],
+        ['DC circuit: no skin or proximity effect', 'R', perKm(c.R), 'Ω/km', '1.4.1.2'],
+      ]
+    : [
     ['DC resistance at 20 °C', 'R0', perKm(c.R0), 'Ω/km', '2.1.1'],
     [`DC resistance at ${fmt(r.temperatures.conductor, 1)} °C`, 'R′', perKm(c.Rdc), 'Ω/km', '2.1.1'],
     ['Skin effect coefficient', 'ks', sig(c.ks, 3), '', 'Table 2'],
@@ -74,7 +83,9 @@ export function calcSections(inst: InstallationSpec, r: RatingResult): { section
     ],
   ];
 
-  const dielectric: Row[] = [
+  const dielectric: Row[] = isDC
+    ? [['DC circuit: no dielectric losses', 'Wd', '0', 'W/m', '1.4.1.2']]
+    : [
     ['Capacitance', 'C', sig(r.dielectric.C * 1e9, 4), 'µF/km', '2.2'],
     [
       r.dielectric.included
@@ -185,6 +196,7 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
   const cableRows: [string, string][] = [
     ['Cable', cable.name],
     ['Cable type', three ? `Three-core, ${tcIn?.shape === 'round' ? 'round' : 'sector-shaped'} conductors, no metallic screen` : 'Single-core'],
+    ['Used in', cable.system === 'dc' && !three ? 'DC circuits, + and − cables (IEC 60287-1-1 1.4.1.2)' : 'AC three-phase circuits'],
     ['Rated voltage U0', v(cable.U0_kV, 1, 'kV')],
     ['Maximum conductor temperature', v(cable.maxTemp_C, 0, '°C')],
     [
@@ -224,7 +236,7 @@ export function inputSections(cable: CableSpec, inst: InstallationSpec): { title
 
   const instRows: [string, string][] = [
     ['Method', typeLabel[inst.type]],
-    ['Frequency', `${inst.frequency_Hz} Hz`],
+    ['Frequency', cable.system === 'dc' && !three ? 'DC' : `${inst.frequency_Hz} Hz`],
     [inst.type === 'air' ? 'Air temperature' : 'Ground temperature', v(inst.ambient_C, 1, '°C')],
   ];
   if (inst.type === 'air') {

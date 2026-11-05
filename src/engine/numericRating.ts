@@ -40,8 +40,8 @@ export function sourceBodies(inst: InstallationSpec): NumObject[] {
 export function bodyLosses(inst: InstallationSpec, result: RatingResult): number[] {
   const { bodies, map } = bodiesOf(inst, result);
   const perPosition = result.system
-    ? result.system.circuits.flatMap((c) => [c.W, c.W, c.W])
-    : [result.losses.W, result.losses.W, result.losses.W];
+    ? result.system.circuits.flatMap((c) => c.positions.map(() => c.W))
+    : result.positions.map(() => result.losses.W);
   const cables = bodies.map(() => 0);
   map.forEach((b, p) => (cables[b] += perPosition[p] ?? 0));
   return [...cables, ...(inst.heatSources ?? []).map((h) => h.W)];

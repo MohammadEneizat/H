@@ -99,7 +99,7 @@ interface Model {
   /** Cores per cable (3 for a three-core cable); T3 carries the heat of all of them */
   mult: number;
   /**
-   * 3 when the circuit's three positions share one external path (a three-core cable, or a
+   * The number of positions when they share one external path (a three-core cable, or a
    * circuit in a shared conduit): the positions coincide and T4 carries the heat of all three.
    */
   share: number;
@@ -162,18 +162,26 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
   if (!Number.isFinite(thetaMax)) errors.push('Enter the maximum conductor temperature.');
   if (!Number.isFinite(thetaA)) errors.push('Enter the ambient temperature.');
   if (thetaMax <= thetaA) errors.push('The maximum conductor temperature must be above the ambient temperature.');
-  if (!pos(inst.frequency_Hz)) errors.push('Enter the system frequency.');
+  const dc = cable.system === 'dc' && cable.cores !== 3;
+  if (!dc && !pos(inst.frequency_Hz)) errors.push('Enter the system frequency.');
   if (!pos(cable.conductor.R20_ohm_km)) errors.push('Enter the conductor DC resistance at 20 °C.');
   if (!(cable.U0_kV >= 0)) errors.push('Enter the rated voltage U0.');
   if (!pos(rhoIns) || !pos(rhoJacket)) errors.push('Thermal resistivities must be positive.');
 
-  const omega = 2 * Math.PI * inst.frequency_Hz;
+  const omega = dc ? 0 : 2 * Math.PI * inst.frequency_Hz;
   const De = g.De;
   const three = g.cores === 3 && !!g.threeCore;
   const mult = three ? 3 : 1;
   const conduit = inst.conduitRef;
-  const share = three || conduit ? 3 : 1;
-  const noScreen = three || cable.screen.form === 'none';
+  /** Cable positions of the circuit: three phases, or + and − for DC */
+  const nPos = dc ? 2 : 3;
+  const share = three || conduit ? nPos : 1;
+  // DC: no induced screen currents, so no screen losses either
+  const noScreen = three || dc || cable.screen.form === 'none';
+  if (dc)
+    notes.push(
+      'DC circuit of two cables (+ and −), IEC 60287-1-1 1.4.1.2: R′ is the DC resistance; no skin, proximity, dielectric or screen losses.',
+    );
 
   // --- Spacing and positions -------------------------------------------------
   let s: number;
@@ -181,9 +189,9 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
   let formation = inst.formation;
   let objectD = De; // diameter of the object whose external resistance is computed
   if (conduit) {
-    // Cables of a circuit in a shared conduit lie together: touching trefoil for losses
+    // Cables of a circuit in a shared conduit lie together: touching trefoil (or pair) for losses
     objectD = conduit.outerD_mm;
-    formation = 'trefoil';
+    formation = dc ? 'flat' : 'trefoil';
     touching = true;
     s = De;
   } else if (three) {
@@ -195,7 +203,7 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     s = touching ? objectD : inst.spacing_mm;
   } else if (inst.type === 'air') {
     const a = AIR_CONSTANTS[inst.air.arrangement];
-    formation = a.formation;
+    formation = dc ? 'flat' : a.formation;
     touching = a.spacingFactor === 1;
     s = a.spacingFactor ? a.spacingFactor * De : inst.spacing_mm;
   } else {
@@ -211,14 +219,26 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
   const depth = (conduit ? conduit.depth_m : inst.depth_m) * 1000;
   const x0 = inst.type === 'air' ? 0 : (conduit ? conduit.x_m : (inst.circuitX_m ?? 0)) * 1000;
   const rotated = share === 1 && inst.type !== 'air' && !!inst.rotated;
-  if (rotated) notes.push(formation === 'flat' ? 'Flat formation laid vertically.' : 'Trefoil laid with the point down.');
+  if (rotated)
+    notes.push(dc ? 'DC cables laid one above the other.' : formation === 'flat' ? 'Flat formation laid vertically.' : 'Trefoil laid with the point down.');
+  const yc = inst.type === 'air' ? 0 : depth;
   const positions =
-    share === 3
-      ? [0, 1, 2].map(() => ({ x: x0, y: inst.type === 'air' ? 0 : depth }))
-      : circuitPositions(formation, s, inst.type === 'air' ? 0 : depth, rotated).map((p) => ({
-          x: p.x + x0,
-          y: p.y,
-        }));
+    share > 1
+      ? Array.from({ length: nPos }, () => ({ x: x0, y: yc }))
+      : dc
+        ? (rotated
+            ? [
+                { x: x0, y: yc - s / 2 },
+                { x: x0, y: yc + s / 2 },
+              ]
+            : [
+                { x: x0 - s / 2, y: yc },
+                { x: x0 + s / 2, y: yc },
+              ])
+        : circuitPositions(formation, s, yc, rotated).map((p) => ({
+            x: p.x + x0,
+            y: p.y,
+          }));
   // Proximity effect: three-core cables use the distance between conductor axes (IEC 60287-1-1 2.1.4.2)
   const tc = g.threeCore;
   const sProx = three && tc ? g.dc + tc.t : s;
@@ -237,6 +257,10 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
   const alphaC = condMetal.alpha20;
   const Rac = cable.conductor.Rac_ohm_km;
   const conductorAt = (theta: number): ConductorResult => {
+    if (dc) {
+      const Rdc = R0 * (1 + alphaC * (theta - 20));
+      return { R0, ks, kp, Rdc, xs: 0, ys: 0, xp: 0, yp: 0, R: Rdc, fromDatasheet: false };
+    }
     const ac0 = conductorAC({ R0, alpha20: alphaC, theta, f: inst.frequency_Hz, ks, kp, dc: g.dc, s: sProx });
     // Sector-shaped conductors: two-thirds of the round-conductor proximity effect, dc = dx
     const ac = sector ? { ...ac0, yp: (ac0.yp * 2) / 3, R: ac0.Rdc * (1 + ac0.ys + (ac0.yp * 2) / 3) } : ac0;
@@ -246,13 +270,13 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     }
     return { R0, ks, kp, ...ac, fromDatasheet: false };
   };
-  if (pos(Rac)) notes.push('Conductor AC resistance taken from the datasheet value at maximum temperature.');
+  if (pos(Rac) && !dc) notes.push('Conductor AC resistance taken from the datasheet value at maximum temperature.');
 
   // --- Dielectric losses ------------------------------------------------------------
   const C = capacitance(epsR, g.Di, g.dcScreen);
-  const wdIncluded = inst.forceDielectric || cable.U0_kV >= ins.wdThreshold_kV;
+  const wdIncluded = !dc && (inst.forceDielectric || cable.U0_kV >= ins.wdThreshold_kV);
   const Wd = wdIncluded ? dielectricLoss(omega, C, cable.U0_kV * 1000, tanD) : 0;
-  if (!wdIncluded)
+  if (!wdIncluded && !dc)
     notes.push(
       `Dielectric losses neglected: U0 = ${cable.U0_kV} kV is below the IEC 60287-1-1 Table 3 threshold of ${ins.wdThreshold_kV} kV for this insulation.`,
     );
@@ -296,7 +320,12 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     );
   const sheathAt = (thetaS: number, R: number): SheathResult => {
     if (noScreen) {
-      const cables = [0, 1, 2].map((i) => ({ label: three ? `Core L${i + 1}` : `Cable L${i + 1}`, lambda1p: 0, lambda1pp: 0, lambda1: 0 }));
+      const cables = positions.map((_, i) => ({
+        label: dc ? (i === 0 ? 'Cable +' : 'Cable −') : three ? `Core L${i + 1}` : `Cable L${i + 1}`,
+        lambda1p: 0,
+        lambda1pp: 0,
+        lambda1: 0,
+      }));
       return { Rs20: NaN, Rs: NaN, rhoS: NaN, X: 0, m: 0, Ft: null, cables, lambda1: 0, governing: 0 };
     }
     const k = 1 + metal.alpha20 * (thetaS - 20);
@@ -323,8 +352,8 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     });
     return { Rs20, Rs, rhoS, ...out, lambda1: out.cables[governing].lambda1, governing };
   };
-  if (noScreen && !three) notes.push('No metallic screen: no screen losses (λ1 = 0).');
-  if (formation === 'flat' && share === 1)
+  if (noScreen && !three && !dc) notes.push('No metallic screen: no screen losses (λ1 = 0).');
+  if (formation === 'flat' && share === 1 && !dc)
     notes.push(
       'Flat formation: the largest loss factor of the three cables is combined with T4 of the hottest position (conservative).',
     );
@@ -395,13 +424,14 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
     const groupT = (rho: number) =>
       share === 3
         ? {
-            T4: [0, 1, 2].map(() => 3 * (rho / (2 * Math.PI)) * acoshTerm((2 * depth) / D)),
+            T4: positions.map(() => share * (rho / (2 * Math.PI)) * acoshTerm((2 * depth) / D)),
             hottest: 0,
             method: conduit
               ? `Conduit “${conduit.name}” with ${conduit.groupCables} cable${conduit.groupCables > 1 ? 's' : ''}: T4‴ = ρ/2π·ln(u + √(u² − 1)), u = 2L/Do, for the heat of all cables in it; T4′ with ${group && conduit.groupCables > 1 ? `the group's equivalent diameter ${group.factor}·De = ${group.Deq.toFixed(0)} mm` : 'the cable diameter'}`
               : 'Three-core cable: T4 = ρ/2π·ln(u + √(u² − 1)) for the heat of all three cores',
           }
-        : groupT4PerCable(rho, D, positions, formation, touching && !rotated, depth);
+        : // The closed formulas for touching groups are for three cables; a DC pair uses superposition
+          groupT4PerCable(rho, D, positions, formation, touching && !rotated && !dc, depth);
 
     // Zone of different resistivity around the cables: duct bank, or backfill (IEC 60287-2-1 2.2.7.3)
     const zone =
@@ -450,7 +480,7 @@ function buildModel(cable: CableSpec, inst: InstallationSpec): Model {
       const rb = ductBankRadius(zone.w, zone.h);
       if (zone.y / rb <= 1) errors.push(`The ${zone.name} is too shallow for its size.`);
       bankUnit = ductBankCorrection(1, inst.soilRho, zone.rho, zone.y, rb);
-      bankCorrection = 3 * bankUnit;
+      bankCorrection = nPos * bankUnit;
       couplingRho = zone.rho;
       perCable = gT.T4.map((t) => share * T4pp + t + (bankCorrection as number));
       method = `${zone.strict ? 'Duct bank' : `Backfill (${zone.name})`} — ${gT.method}, with ρ = ${zone.rho} K·m/W, plus N/2π·(ρe − ρc)·ln(u + √(u² − 1)), u = LG/rb, rb = ${rb.toFixed(0)} mm`;
@@ -595,7 +625,19 @@ interface RatingState {
   iterations: number;
 }
 
-const ZERO3 = [0, 0, 0];
+/** No heating from elsewhere, one entry per cable position */
+const zeros = (m: Model) => m.positions.map(() => 0);
+
+/** Index of each circuit's first cable position in the list of all positions */
+function offsetsOf(circs: { m: Model }[]): { off: number[]; total: number } {
+  const off: number[] = [];
+  let total = 0;
+  circs.forEach((c) => {
+    off.push(total);
+    total += c.m.positions.length;
+  });
+  return { off, total };
+}
 
 /**
  * T4 parts as IEC 60287 states them: per cable (three-core cable), or per W/m of the heat in
@@ -621,7 +663,7 @@ function ductBreakdown(m: Model, T4p: number, gov: number, thetaM: number, mutua
  * B[p] is the temperature rise at cable p caused by other circuits; it is taken off the
  * permissible rise Δθ, as in IEC 60287-2-1 2.2.3.1. The rating is the lowest of the three cables.
  */
-function rateCase(m: Model, soil: SoilCase, B: number[] = ZERO3): RatingState | string {
+function rateCase(m: Model, soil: SoilCase, B: number[] = zeros(m)): RatingState | string {
   const dTheta = m.thetaMax - m.thetaA;
   const conductor = m.conductorAt(m.thetaMax);
   const R = conductor.R;
@@ -644,7 +686,7 @@ function rateCase(m: Model, soil: SoilCase, B: number[] = ZERO3): RatingState | 
       T4p = airT4(m, thetaM);
       let gov = -1;
       I = Infinity;
-      for (let p = 0; p < 3; p++) {
+      for (let p = 0; p < m.positions.length; p++) {
         const T4 = T4p + m.ext.perCable[p];
         const Ip =
           soil === 'two-zone'
@@ -690,7 +732,7 @@ function rateCase(m: Model, soil: SoilCase, B: number[] = ZERO3): RatingState | 
  * State of a circuit carrying current I with temperature-dependent properties evaluated at
  * an assumed conductor temperature (θmax for rated circuits, the actual temperature otherwise).
  */
-function circuitState(m: Model, I: number, thetaAssumed: number, B: number[] = ZERO3) {
+function circuitState(m: Model, I: number, thetaAssumed: number, B: number[] = zeros(m)) {
   const conductor = m.conductorAt(thetaAssumed);
   const R = conductor.R;
   const Wc = I * I * R;
@@ -707,7 +749,7 @@ function circuitState(m: Model, I: number, thetaAssumed: number, B: number[] = Z
   for (let k = 0; k < 200; k++) {
     T4p = airT4(m, thetaM);
     ext = -Infinity;
-    for (let p = 0; p < 3; p++) {
+    for (let p = 0; p < m.positions.length; p++) {
       const e = n * W * (T4p + m.ext.perCable[p]) + B[p];
       if (e > ext) {
         ext = e;
@@ -743,7 +785,7 @@ function circuitState(m: Model, I: number, thetaAssumed: number, B: number[] = Z
 }
 
 /** Conductor temperature for a given current, with all properties at their actual temperatures. */
-function temperatureAt(m: Model, I: number, soil: SoilCase, B: number[] = ZERO3) {
+function temperatureAt(m: Model, I: number, soil: SoilCase, B: number[] = zeros(m)) {
   let thetaC = m.thetaMax;
   let thetaM = m.thetaA + 10;
   let out = { thetaC, thetaS: thetaC, surface: thetaC, R: 0, lambda1: 0, W: 0, iterations: 0, extRiseMoist: 0 };
@@ -766,7 +808,7 @@ function temperatureAt(m: Model, I: number, soil: SoilCase, B: number[] = ZERO3)
       extMoist = 0;
       for (let k = 0; k < 200; k++) {
         T4p = airT4(m, thetaM);
-        extMoist = Math.max(...[0, 1, 2].map((p) => n * W * (T4p + m.ext.perCable[p]) + B[p]));
+        extMoist = Math.max(...m.positions.map((_, p) => n * W * (T4p + m.ext.perCable[p]) + B[p]));
         if (m.ext.kind !== 'ducts') break;
         const next = m.thetaA + extMoist - 0.5 * n * W * T4p;
         if (Math.abs(next - thetaM) < 1e-10) break;
@@ -824,7 +866,7 @@ function conduitGroup(mainCable: CableSpec, inst: InstallationSpec, id: string) 
   let sum = 0;
   members.forEach((cab) => {
     const g = deriveGeometry(cab).geometry;
-    const k = g.cores === 3 ? 1 : 3;
+    const k = g.cores === 3 ? 1 : cab.system === 'dc' ? 2 : 3;
     count += k;
     sum += k * g.De;
   });
@@ -906,25 +948,101 @@ interface SystemSolution {
 /** True when two circuits lie in the same shared conduit. */
 const sameConduit = (a: Model, b: Model) => !!a.conduit && a.conduit.id === b.conduit?.id;
 
-function couplingRises(circs: SysCircuit[], W: number[], F?: number[][], Bsrc?: number[][]): number[][] {
+/**
+ * Coupling between circuits: T[i][p][k] is the temperature rise at cable p of circuit i per
+ * W/m dissipated in each cable of circuit k (k ≠ i), IEC 60287-2-1 2.2.3.1, or from the
+ * numerical model. Circuits in one conduit heat each other through its air gap, wall and ground.
+ */
+function couplingTensor(circs: SysCircuit[], F?: number[][]): number[][][] {
+  const { off } = offsetsOf(circs);
   return circs.map((c, ci) =>
-    c.m.positions.map((p, pi) => {
-      let sum = Bsrc ? Bsrc[ci][pi] : 0;
-      circs.forEach((o, oi) => {
-        if (oi === ci) return;
+    c.m.positions.map((p, pi) =>
+      circs.map((o, oi) => {
+        if (oi === ci) return 0;
         if (sameConduit(c.m, o.m)) {
-          // Heat of another circuit in the same conduit crosses the conduit's air gap, wall and ground
-          const unit = (c.m.ext.sharedAir ?? 0) / 3 + c.m.ext.perCable[pi] / 3;
-          sum += 3 * W[oi] * unit;
-          return;
+          const unit = ((c.m.ext.sharedAir ?? 0) + c.m.ext.perCable[pi]) / c.m.share;
+          return o.m.positions.length * unit;
         }
+        let sum = 0;
         o.m.positions.forEach((q, qi) => {
-          sum += W[oi] * (F ? F[ci * 3 + pi][oi * 3 + qi] : mutualHeatingFactor(c.m.ext.couplingRho, p, q) + c.m.ext.bankUnit);
+          sum += F ? F[off[ci] + pi][off[oi] + qi] : mutualHeatingFactor(c.m.ext.couplingRho, p, q) + c.m.ext.bankUnit;
         });
-      });
-      return sum;
-    }),
+        return sum;
+      }),
+    ),
   );
+}
+
+/** Rise at every cable from the other circuits (W per cable of each circuit) and from heat sources. */
+function risesFrom(T: number[][][], W: number[], Bsrc?: number[][]): number[][] {
+  return T.map((byCable, ci) => byCable.map((row, pi) => row.reduce((a, t, k) => a + t * W[k], Bsrc ? Bsrc[ci][pi] : 0)));
+}
+
+function couplingRises(circs: SysCircuit[], W: number[], F?: number[][], Bsrc?: number[][]): number[][] {
+  return risesFrom(couplingTensor(circs, F), W, Bsrc);
+}
+
+/**
+ * The rating equation of a circuit written as den·I² + off = Δθ − B[p] at its governing
+ * cable p, with λ1, T4′ and the governing cable taken at current I and rises B.
+ */
+function ratingTerms(m: Model, I: number, B: number[]) {
+  const R = m.conductorAt(m.thetaMax).R;
+  const Wc = I * I * R;
+  const thetaS = m.thetaMax - (Wc + 0.5 * m.Wd) * m.T1;
+  const l1 = m.sheathAt(thetaS, R).lambda1;
+  const W = Wc * (1 + l1) + m.Wd;
+  let T4p = 0;
+  let p = 0;
+  let thetaM = m.thetaA + 0.5 * (m.thetaMax - m.thetaA);
+  for (let k = 0; k < 100; k++) {
+    T4p = airT4(m, thetaM);
+    let ext = -Infinity;
+    m.positions.forEach((_, q) => {
+      const e = W * (T4p + m.ext.perCable[q]) + B[q];
+      if (e > ext) {
+        ext = e;
+        p = q;
+      }
+    });
+    if (m.ext.kind !== 'ducts' || m.ext.sharedAir !== undefined) break;
+    const next = m.thetaA + ext - 0.5 * W * T4p;
+    if (Math.abs(next - thetaM) < 1e-10) break;
+    thetaM = next;
+  }
+  const T34 = T3e(m) + T4p + m.ext.perCable[p];
+  return {
+    p,
+    /** Heat per cable per A² */
+    r: R * (1 + l1),
+    den: R * (m.T1 + n * (1 + l1) * T2 + n * (1 + l1 + lambda2) * T34),
+    off: m.Wd * (0.5 * m.T1 + n * (T2 + T34)),
+  };
+}
+
+/** Solves A·x = b by Gaussian elimination with partial pivoting. */
+function solveLinear(A: number[][], b: number[]): number[] {
+  const n = b.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    const d = M[c][c];
+    if (Math.abs(d) < 1e-300) return b.map(() => NaN);
+    for (let r = c + 1; r < n; r++) {
+      const f = M[r][c] / d;
+      if (f === 0) continue;
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let sum = M[r][n];
+    for (let k = r + 1; k < n; k++) sum -= M[r][k] * x[k];
+    x[r] = sum / M[r][r];
+  }
+  return x;
 }
 
 /** Circuits grouped by shared conduit, only conduits holding two or more circuits. */
@@ -946,13 +1064,13 @@ function sharedGroups(circs: SysCircuit[]): number[][] {
 function updateSharedAir(circs: SysCircuit[], groups: number[][], W?: number[], B?: number[][]) {
   for (const g of groups) {
     const m0 = circs[g[0]].m;
-    const unit = m0.ext.perCable[0] / 3;
+    const unit = m0.ext.perCable[0] / m0.share;
     const air = (thetaM: number) => ductAirT4(m0.ext.U!, m0.ext.V!, m0.ext.Y!, thetaM, m0.ext.airDe ?? m0.geometry.De);
-    let T4a = (m0.ext.sharedAir ?? 3 * air(m0.thetaA + 0.5 * (m0.thetaMax - m0.thetaA))) / 3;
+    let T4a = m0.ext.sharedAir !== undefined ? m0.ext.sharedAir / m0.share : air(m0.thetaA + 0.5 * (m0.thetaMax - m0.thetaA));
     let thetaM = m0.thetaA + 0.5 * (m0.thetaMax - m0.thetaA);
     if (W && B) {
-      const Q = g.reduce((a, i) => a + 3 * W[i], 0);
-      const fromMembers = g.slice(1).reduce((a, i) => a + 3 * W[i] * (T4a + unit), 0);
+      const Q = g.reduce((a, i) => a + circs[i].m.positions.length * W[i], 0);
+      const fromMembers = g.slice(1).reduce((a, i) => a + circs[i].m.positions.length * W[i] * (T4a + unit), 0);
       const outside = B[g[0]][0] - fromMembers;
       for (let k = 0; k < 100; k++) {
         thetaM = m0.thetaA + outside + Q * unit + 0.5 * Q * T4a;
@@ -963,7 +1081,7 @@ function updateSharedAir(circs: SysCircuit[], groups: number[][], W?: number[], 
       }
     } else T4a = air(thetaM);
     g.forEach((i) => {
-      circs[i].m.ext.sharedAir = 3 * T4a;
+      circs[i].m.ext.sharedAir = circs[i].m.share * T4a;
       circs[i].m.ext.sharedThetaM = thetaM;
     });
   }
@@ -971,10 +1089,11 @@ function updateSharedAir(circs: SysCircuit[], groups: number[][], W?: number[], 
 
 /** Replaces the external thermal resistances of each circuit with those of a numerical model. */
 function applyNumeric(models: Model[], F: number[][]) {
+  const { off } = offsetsOf(models.map((m) => ({ m })));
   models.forEach((m, ci) => {
     if (m.ext.kind === 'air') return;
-    const o = ci * 3;
-    const per = [0, 1, 2].map((p) => m.share * (m.ext.T4pp ?? 0) + F[o + p][o] + F[o + p][o + 1] + F[o + p][o + 2]);
+    const o = off[ci];
+    const per = m.positions.map((_, p) => m.share * (m.ext.T4pp ?? 0) + m.positions.reduce((a, _q, k) => a + F[o + p][o + k], 0));
     let hottest = 0;
     per.forEach((v, i) => {
       if (v > per[hottest]) hottest = i;
@@ -1054,16 +1173,17 @@ function solveSystem(
         errors.push(`${h.name} overlaps ${c.name}. Move it further away.`);
     });
   });
-  if (SF && SF.length !== circs.length * 3) errors.push('The numerical model does not match the heat sources.');
+  const { off, total } = offsetsOf(circs);
+  if (SF && SF.length !== total) errors.push('The numerical model does not match the heat sources.');
   const Bsrc = circs.map((c, ci) =>
     c.m.positions.map((p, pi) =>
-      sources.reduce((a, h, si) => a + h.W * (SF ? SF[ci * 3 + pi][si] : mutualHeatingFactor(inst.soilRho, p, h)), 0),
+      sources.reduce((a, h, si) => a + h.W * (SF ? SF[off[ci] + pi][si] : mutualHeatingFactor(inst.soilRho, p, h)), 0),
     ),
   );
   if (errors.length || circs[0].m.errors.length)
-    return { errors: [...circs[0].m.errors, ...errors], warnings, circuits: circs, B: circs.map(() => ZERO3), iterations: 0 };
+    return { errors: [...circs[0].m.errors, ...errors], warnings, circuits: circs, B: circs.map((c) => zeros(c.m)), iterations: 0 };
   if (F) {
-    if (F.length !== circs.length * 3) return { errors: ['The numerical model does not match the circuits.'], warnings, circuits: circs, B: circs.map(() => ZERO3), iterations: 0 };
+    if (F.length !== total) return { errors: ['The numerical model does not match the circuits.'], warnings, circuits: circs, B: circs.map((c) => zeros(c.m)), iterations: 0 };
     applyNumeric(circs.map((c) => c.m), F);
   }
 
@@ -1079,49 +1199,82 @@ function solveSystem(
     c.I = r.I;
   }
 
-  const relax = 0.7;
-  let B: number[][] = circs.map(() => ZERO3);
+  // Each rated circuit's limit is linear in I² of all circuits once λ1, T4′ and the governing
+  // cable are fixed, so every step solves that linear system and then updates them. This stays
+  // stable however strongly the circuits heat each other (many DC strings in one trench).
+  const ratedIdx = circs.map((c, i) => (c.load === 'rated' ? i : -1)).filter((i) => i >= 0);
+  let B: number[][] = circs.map((c) => zeros(c.m));
   let it = 0;
-  for (it = 1; it <= 2000; it++) {
+  let relaxI = 1;
+  let lastChange = Infinity;
+  for (it = 1; it <= 400; it++) {
     const W = circs.map((c) => circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta).W);
-    B = couplingRises(circs, W, F, Bsrc);
+    let T = couplingTensor(circs, F);
+    B = risesFrom(T, W, Bsrc);
     if (groups.length) {
       updateSharedAir(circs, groups, W, B);
-      B = couplingRises(circs, W, F, Bsrc);
+      T = couplingTensor(circs, F);
+      B = risesFrom(T, W, Bsrc);
     }
     let change = 0;
-    const newI = circs.map((c) => c.I);
-    const rated = circs.map((c, i) => ({ c, i })).filter(({ c }) => c.load === 'rated');
-    if (inst.ratingMode === 'equal-current' && rated.length) {
-      let common = Infinity;
-      for (const { c, i } of rated) {
-        const r = rateCase(c.m, 'moist', B[i]);
-        if (typeof r === 'string') return { errors: [`${c.name}: ${r}`], warnings, circuits: circs, B, iterations: it };
-        common = Math.min(common, r.I);
+    if (ratedIdx.length) {
+      const terms = ratedIdx.map((i) => ratingTerms(circs[i].m, circs[i].I, B[i]));
+      const rhs = ratedIdx.map((i, a) => {
+        const p = terms[a].p;
+        let v = circs[i].m.thetaMax - circs[i].m.thetaA - terms[a].off - Bsrc[i][p];
+        circs.forEach((o, k) => {
+          if (k === i) return;
+          const rk = ratedIdx.indexOf(k);
+          // rated circuits: only their dielectric loss is fixed; fixed circuits: all their heat
+          v -= T[i][p][k] * (rk >= 0 ? o.m.Wd : W[k]);
+        });
+        return v;
+      });
+      let X: number[];
+      if (inst.ratingMode === 'equal-current') {
+        const lim = ratedIdx.map((i, a) => rhs[a] / (terms[a].den + ratedIdx.reduce((sum, k, b) => sum + T[i][terms[a].p][k] * terms[b].r, 0)));
+        const common = Math.min(...lim);
+        X = ratedIdx.map(() => common);
+      } else {
+        const A = ratedIdx.map((i, a) => ratedIdx.map((k, b) => (a === b ? terms[a].den : T[i][terms[a].p][k] * terms[b].r)));
+        X = solveLinear(A, rhs);
       }
-      rated.forEach(({ i }) => (newI[i] = common));
-    } else {
-      for (const { c, i } of rated) {
-        const r = rateCase(c.m, 'moist', B[i]);
-        if (typeof r === 'string') return { errors: [`${c.name}: ${r}`], warnings, circuits: circs, B, iterations: it };
-        newI[i] = r.I;
+      const bad = X.findIndex((x) => !(x > 0));
+      if (bad >= 0) {
+        const c = circs[ratedIdx[bad]];
+        return {
+          errors: [
+            `${c.name}: No current can be carried: heating from the other circuits already uses up the permissible temperature rise.${
+              inst.ratingMode === 'equal-current' ? '' : ' Try “all carry one current”, or give some circuits a fixed load.'
+            }`,
+          ],
+          warnings,
+          circuits: circs,
+          B,
+          iterations: it,
+        };
       }
+      ratedIdx.forEach((i, a) => {
+        const next = Math.sqrt(X[a]);
+        const c = circs[i];
+        change = Math.max(change, Math.abs(next - c.I) / Math.max(1, c.I));
+        c.I += relaxI * (next - c.I);
+      });
     }
     circs.forEach((c, i) => {
-      if (c.load === 'rated') {
-        change = Math.max(change, Math.abs(newI[i] - c.I) / Math.max(1, c.I));
-        c.I += relax * (newI[i] - c.I);
-      } else {
-        const t = circuitState(c.m, c.I, c.theta, B[i]).thetaC;
-        change = Math.max(change, Math.abs(t - c.theta) / 100);
-        c.theta += relax * (t - c.theta);
-        if (!Number.isFinite(c.theta) || c.theta > 2000) {
-          errors.push(`${c.name}: the temperature does not settle at ${c.I} A (thermal runaway).`);
-        }
+      if (c.load === 'rated') return;
+      const t = circuitState(c.m, c.I, c.theta, B[i]).thetaC;
+      change = Math.max(change, Math.abs(t - c.theta) / 100);
+      c.theta += 0.7 * (t - c.theta);
+      if (!Number.isFinite(c.theta) || c.theta > 2000) {
+        errors.push(`${c.name}: the temperature does not settle at ${c.I} A (thermal runaway).`);
       }
     });
     if (errors.length) return { errors, warnings, circuits: circs, B, iterations: it };
     if (change < 1e-11) break;
+    // The governing cable can switch back and forth; damp the steps if progress stalls
+    if (it > 30 && change > 0.9 * lastChange) relaxI = Math.max(0.2, relaxI * 0.7);
+    lastChange = change;
   }
   const W = circs.map((c) => circuitState(c.m, c.I, c.load === 'rated' ? c.m.thetaMax : c.theta).W);
   B = couplingRises(circs, W, F, Bsrc);
@@ -1148,7 +1301,7 @@ function cableLayout(models: Model[]): { cablePositions: Point[]; conduit?: Circ
       k.x,
       k.y,
       k.Di,
-      idx.map((i) => ({ De: models[i].geometry.De, cores: models[i].geometry.cores })),
+      idx.map((i) => ({ De: models[i].geometry.De, cores: models[i].geometry.cores, cables: models[i].positions.length })),
     );
     idx.forEach((i, j) => {
       out[i].cablePositions = placed[j];
@@ -1166,6 +1319,7 @@ function circuitResults(sol: SystemSolution): CircuitResult[] {
     return {
       ...layout[i],
       cores: c.m.geometry.cores,
+      isDC: c.m.cable.system === 'dc' && c.m.geometry.cores !== 3,
       name: c.name,
       cableName: c.cableName,
       load: c.load,
@@ -1538,7 +1692,7 @@ export function calculateTemperature(
   if (!(I >= 0)) return empty(['Enter a load current.']);
 
   let m: Model;
-  let B = ZERO3;
+  let B: number[] | undefined;
   let soil: SoilCase = inst.type === 'direct' && inst.soilModel === 'two-zone' ? 'two-zone' : 'moist';
   if (hasOtherCircuits(inst)) {
     // Others at their rating with the main circuit rated, then the main circuit at I.

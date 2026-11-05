@@ -36,6 +36,9 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
   const duct = DUCTS[i.duct.material];
   const airSpaced = i.type === 'air' && AIR_CONSTANTS[i.air.arrangement].spacingFactor === null;
   const flat = i.type === 'air' ? AIR_CONSTANTS[i.air.arrangement].formation === 'flat' : i.formation === 'flat';
+  const isDC = cable.system === 'dc' && cable.cores !== 3;
+  const threeCore = cable.cores === 3;
+  const noScreen = isDC || threeCore || cable.screen.form === 'none';
 
   return (
     <div className="form">
@@ -82,7 +85,7 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
           value={i.ambient_C}
           onChange={(v) => set({ ambient_C: num(v) })}
         />
-        <SelectField
+        {!isDC && <SelectField
           id="freq"
           label="Frequency"
           value={String(i.frequency_Hz) as '50' | '60'}
@@ -91,17 +94,36 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             { value: '60', label: '60 Hz' },
           ]}
           onChange={(v) => set({ frequency_Hz: Number(v) })}
-        />
+        />}
       </Section>
 
       <Section title="Circuit">
-        {i.type === 'air' ? (
+        {isDC && (
+          <p className="field-hint field-wide">
+            DC circuit: two single-core cables, + and −. The rating follows IEC 60287-1-1 1.4.1.2 with the DC
+            resistance; there are no skin, proximity, screen or dielectric losses.
+          </p>
+        )}
+        {threeCore ? (
+          <p className="field-hint field-wide">One three-core cable per circuit.</p>
+        ) : i.type === 'air' ? (
           <SelectField
             id="air-arr"
             label="Arrangement"
             value={i.air.arrangement}
             options={airOptions}
             onChange={(arrangement) => setAir({ arrangement })}
+          />
+        ) : isDC ? (
+          <Segmented
+            id="formation"
+            label="Cables"
+            value={i.rotated ? 'stacked' : 'side'}
+            options={[
+              { value: 'side', label: 'Side by side' },
+              { value: 'stacked', label: 'One above the other' },
+            ]}
+            onChange={(v) => set({ formation: 'flat', rotated: v === 'stacked' })}
           />
         ) : (
           <Segmented
@@ -115,7 +137,7 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             onChange={(formation) => set({ formation })}
           />
         )}
-        {i.type !== 'air' && (
+        {i.type !== 'air' && !threeCore && (
           <Toggle
             id="touching"
             label={inDucts ? 'Ducts touching' : 'Cables touching'}
@@ -130,10 +152,10 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             unit="mm"
             value={i.spacing_mm}
             onChange={(v) => set({ spacing_mm: num(v) })}
-            hint="Centre to centre, between adjacent phases."
+            hint={isDC ? 'Centre to centre, between the + and − cables.' : 'Centre to centre, between adjacent phases.'}
           />
         )}
-        {flat && (
+        {flat && !isDC && !threeCore && (
           <Toggle
             id="transposed"
             label="Cables regularly transposed"
@@ -141,7 +163,7 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             onChange={(transposed) => set({ transposed })}
           />
         )}
-        <Segmented
+        {!noScreen && <Segmented
           id="bonding"
           label="Screen bonding"
           value={i.bonding}
@@ -151,8 +173,8 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             { value: 'cross', label: 'Cross-bonded' },
           ]}
           onChange={(bonding) => set({ bonding })}
-        />
-        {i.bonding === 'cross' && (
+        />}
+        {!noScreen && i.bonding === 'cross' && (
           <NumField
             id="xb"
             label="Circulating loss factor λ1′"
@@ -163,13 +185,15 @@ export function InstallationForm({ inst, cable, onChange }: Props) {
             hint="Residual loss from unequal minor sections. Enter 0 for perfectly balanced sections."
           />
         )}
-        <Toggle
-          id="wd"
-          label="Always include dielectric losses"
-          checked={i.forceDielectric}
-          onChange={(forceDielectric) => set({ forceDielectric })}
-          hint="IEC 60287-1-1 Table 3 neglects them below a voltage threshold."
-        />
+        {!isDC && (
+          <Toggle
+            id="wd"
+            label="Always include dielectric losses"
+            checked={i.forceDielectric}
+            onChange={(forceDielectric) => set({ forceDielectric })}
+            hint="IEC 60287-1-1 Table 3 neglects them below a voltage threshold."
+          />
+        )}
       </Section>
 
       {buried && (

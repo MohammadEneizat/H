@@ -6,8 +6,10 @@ A web app that calculates the continuous current rating (ampacity) of power cabl
 It covers three-phase circuits of **single-core cables without armour** (the usual MV and
 HV XLPE land cable with a copper wire screen, a lead or aluminium sheath, a corrugated
 sheath, or no metallic screen at all) and **three-core cables without screen or armour**,
-such as the LV cables NYY, NAYY, N2XY and NA2XY. Several circuits can share a trench, ducts,
-a duct bank or one conduit, each with its own cable.
+such as the LV cables NYY, NAYY, N2XY and NA2XY, and **DC circuits** of two single-core
+cables (+ and −), such as PV string and main DC cables. Several circuits can share a trench,
+ducts, a duct bank or one conduit, each with its own cable. A trench section can be imported
+from a **DXF** drawing.
 
 ## Run it
 
@@ -162,6 +164,53 @@ if the inner covering is left empty it is worked out from the datasheet overall 
 The library has two examples with typical NA2XY values (3×240 SM three-core, and
 1×240 RM single-core without screen). Replace them with your datasheet.
 
+## DC cables
+
+Under *Cable → Used in*, choose **DC (+ and −)**. A DC circuit is two single-core cables, side
+by side or one above the other, touching or spaced. The rating follows IEC 60287-1-1 1.4.1.2
+(DC cables up to 5 kV): I = √[Δθ / (R′·(T1 + n·T2 + n·(T3 + T4)))] with R′ the DC resistance at
+the maximum temperature; there are no skin, proximity, dielectric or screen losses. T4 of the
+pair, and the heating between circuits, use superposition with image sources. AC and DC
+circuits can lie in the same trench, each with its own cable.
+
+The Library has the **Prysmian TECSUN (PV) H1Z2Z2-K** range (1×4 to 1×400 mm²) from the
+datasheet of 2024-11-19: conductor and cable diameters (mean of minimum and maximum) and DC
+resistance are the datasheet values; the insulation thickness is the usual 0.6/1 kV value for
+the size and the EVA sheath the rest of the wall (ρ 5.0 K·m/W assumed, not in IEC Table 1).
+The datasheet's current ratings (EN 50618, single cable in air at 60 °C ambient and 120 °C)
+are not used.
+
+Many circuits close together, such as tens of PV string pairs in one trench, are solved
+directly: with λ1, T4′ and the governing cable fixed, each circuit's temperature limit is
+linear in the squares of all currents, so each step solves that linear system. Both rating
+modes are exact at convergence: every circuit at its own limit, or one current with the
+hottest circuit at its limit.
+
+## DXF import
+
+In the cross-section editor, **Import DXF…** reads an ASCII DXF drawing of the trench section
+(DWG must be saved as DXF first). It reads lines, polylines (with arcs), arcs, circles,
+ellipses, splines, text and blocks; hatches and dimensions are skipped.
+
+- **Regions**: closed areas are found from all the lines together, whether drawn as closed
+  polylines or as separate lines that meet or cross (a trench outline with a line across it
+  for the top of the bedding gives two regions). Each becomes a fill shape, larger ones first
+  so smaller ones lie on top. The material comes from a label inside the region (sand, CBS,
+  concrete, bentonite, gravel, asphalt, topsoil, backfill…, with a resistivity if the label
+  gives one in K·m/W), otherwise sand where it holds cables and native soil elsewhere. The
+  frame of the drawing is left out.
+- **Circles**: concentric circles of similar size are one object. Circles up to the cable size
+  you set are cables, larger ones conduits (up to 600 mm) or bores. Cables are grouped into
+  circuits as the Cable tab says: three single-core (AC), two (DC) or one three-core cable;
+  cables inside a conduit become circuits in that conduit; single cables each in their own duct
+  become a circuit in ducts. Formation, spacing and touching are read from the positions.
+- **Placement**: the units come from the file header (or the size of the drawing), the ground
+  surface is the highest line, and x = 0 is the middle of the drawing; all three can be changed
+  in the import panel, which shows a preview and lets you change each region's material.
+- The drawing stays visible underneath as thin lines (switch *DXF drawing* off, or remove it).
+
+The editor has a sample (a PV trench with four DC pairs and a spare DN160 conduit) to try.
+
 ## Shared conduits
 
 In the cross-section editor, **Add → Conduit** places a pipe (DN160, PE 160/141 mm by default)
@@ -236,6 +285,7 @@ be confirmed against your copy of IEC 60287-2-1.
 ## Not covered yet
 
 - Armour (λ2, T2), three-core cables with metallic screens, pipe-type cables
+- DXF: hatches, dimensions and binary DXF are not read; DWG is not supported
 - Round three-core conductors use an approximation of IEC Figure 3 for G
 - Soil drying-out in the numerical model, and longitudinal heat flow at short crossings
 - Cyclic and emergency ratings (IEC 60853)
@@ -248,6 +298,7 @@ src/engine/   IEC 60287 engine, cross-section model, numerical ground model (no 
 src/ui/       React components, drawings, heat map
 src/report/   calculation-sheet tables and the PDF report
 public/fonts/ font subsets embedded in the PDF
-tests/        engine tests (Vitest): IEC formulas, numerical model, three-core cables and conduits
+tests/        engine tests (Vitest): IEC formulas, numerical model, three-core and DC cables, conduits, DXF
+src/samples/  sample DXF drawing
 scripts/      packs a single-file build for hosting
 ```

@@ -151,7 +151,8 @@ export function Results({ cable, inst, result: r, onInstChange, undo, redo, canU
       <section className="card summary" aria-live="polite">
         <div className="summary-main">
           <p className="eyebrow">
-            {r.system && r.system.circuits.length > 1 ? 'Main circuit C1 · permissible current per phase' : 'Permissible current per phase'}
+            {r.system && r.system.circuits.length > 1 ? 'Main circuit C1 · permissible current ' : 'Permissible current '}
+            {r.positions.length === 2 ? 'per cable (DC)' : 'per phase'}
           </p>
           <p className="hero-figure">
             {amps(r.I)}

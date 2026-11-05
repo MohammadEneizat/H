@@ -1609,3 +1609,112 @@ textarea {
 .member-list .toggle {
   margin: 0;
 }
+.tecsun-row select {
+  flex: 1 1 220px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  padding: 6px 8px;
+  font-size: var(--fs-sm);
+}
+
+/* ---------- DXF import ---------- */
+.dxf-import {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  display: grid;
+  gap: 12px;
+}
+.dxf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.dxf-head h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-md);
+  overflow-wrap: anywhere;
+}
+.dxf-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 14px 18px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .dxf-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.dxf-preview {
+  width: 100%;
+  height: auto;
+  max-height: 420px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.dxf-regions {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.dxf-regions li {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) minmax(0, 150px);
+  gap: 8px;
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+.dxf-regions select {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  padding: 4px 6px;
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.dxf-region-name {
+  overflow-wrap: anywhere;
+}
+.swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+}
+.dxf-msg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  padding: 8px 14px;
+  border-radius: 4px;
+  background: var(--ok-soft);
+  font-size: var(--fs-sm);
+}
+.dxf-msg.is-note {
+  background: var(--note-soft);
+}
+.dxf-msg p {
+  margin: 0;
+  max-width: 80ch;
+}
+.dxf-side {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-2);
+}

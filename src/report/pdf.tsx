@@ -373,7 +373,8 @@ export async function buildPdfReport({ cable, inst, result: r, numeric }: Report
   doc.rect(w.x0, boxY, w.width, 0.9, 'F');
   w.font(6.8, true, COL.ink3);
   doc.text(
-    (r.system && r.system.circuits.length > 1 ? 'MAIN CIRCUIT C1 · PERMISSIBLE CURRENT PER PHASE' : 'PERMISSIBLE CURRENT PER PHASE'),
+    (r.system && r.system.circuits.length > 1 ? 'MAIN CIRCUIT C1 · PERMISSIBLE CURRENT ' : 'PERMISSIBLE CURRENT ') +
+      (r.positions.length === 2 ? 'PER CABLE (DC)' : 'PER PHASE'),
     w.x0 + 5,
     boxY + 4.5,
     { baseline: 'top', charSpace: 0.3 },
@@ -658,7 +659,7 @@ export async function buildPdfReport({ cable, inst, result: r, numeric }: Report
 
   w.heading('Method');
   w.para(
-    'Steady-state current rating at 100 % load factor to IEC 60287-1-1 and IEC 60287-2-1 for three-phase circuits of single-core cables without armour. The permissible current follows from the conductor temperature limit, the conductor, dielectric and screen losses, and the thermal resistances of the insulation, oversheath and surroundings. Temperature-dependent quantities (sheath temperature, air in ducts, surface of cables in air) are iterated to convergence. Heating between circuits uses superposition (IEC 60287-2-1 2.2.3.1). Material constants default to the IEC tables unless overridden.',
+    'Steady-state current rating at 100 % load factor to IEC 60287-1-1 and IEC 60287-2-1 for three-phase circuits of single-core or three-core cables without armour, and for DC circuits of two single-core cables (IEC 60287-1-1 1.4.1.2). The permissible current follows from the conductor temperature limit, the conductor, dielectric and screen losses, and the thermal resistances of the insulation, oversheath and surroundings. Temperature-dependent quantities (sheath temperature, air in ducts, surface of cables in air) are iterated to convergence. Heating between circuits uses superposition (IEC 60287-2-1 2.2.3.1). Material constants default to the IEC tables unless overridden.',
     7.6,
   );
   w.para(

@@ -186,3 +186,65 @@ export const DEFAULT_INSTALLATION: InstallationSpec = {
   ratingMode: 'own-limit',
   air: { arrangement: 'trefoil', solar: false, H: 1000, absorption: null },
 };
+
+/**
+ * Prysmian TECSUN (PV) H1Z2Z2-K 1/1 kV (DC 1.5 kV) single-core solar cable, from the
+ * datasheet of 2024-11-19: tinned copper class 5, HEPR insulation, EVA sheath.
+ * Conductor diameter, cable diameter (mean of min and max) and DC resistance are the
+ * datasheet values; the insulation thickness is the usual 0.6/1 kV value for the size and
+ * the sheath is the rest of the wall. iAir is the datasheet rating (EN 50618 Table A.3,
+ * single cable in free air) for comparison only.
+ */
+export const TECSUN_SIZES: { area: number; dc: number; odMin: number; odMax: number; R20: number; iAir: number }[] = [
+  { area: 4, dc: 2.4, odMin: 5.3, odMax: 5.9, R20: 5.065, iAir: 55 },
+  { area: 6, dc: 2.9, odMin: 5.8, odMax: 6.5, R20: 3.373, iAir: 70 },
+  { area: 10, dc: 3.9, odMin: 7.0, odMax: 7.6, R20: 1.921, iAir: 98 },
+  { area: 16, dc: 5.0, odMin: 8.5, odMax: 9.3, R20: 1.24, iAir: 132 },
+  { area: 25, dc: 6.4, odMin: 10.4, odMax: 11.2, R20: 0.795, iAir: 176 },
+  { area: 35, dc: 7.6, odMin: 11.7, odMax: 12.5, R20: 0.565, iAir: 218 },
+  { area: 50, dc: 9.1, odMin: 13.5, odMax: 14.5, R20: 0.393, iAir: 276 },
+  { area: 70, dc: 10.8, odMin: 15.5, odMax: 16.5, R20: 0.277, iAir: 347 },
+  { area: 95, dc: 12.6, odMin: 17.7, odMax: 18.7, R20: 0.21, iAir: 416 },
+  { area: 120, dc: 14.2, odMin: 19.2, odMax: 20.4, R20: 0.164, iAir: 488 },
+  { area: 150, dc: 15.8, odMin: 21.4, odMax: 22.6, R20: 0.132, iAir: 566 },
+  { area: 185, dc: 17.4, odMin: 23.7, odMax: 25.1, R20: 0.108, iAir: 644 },
+  { area: 240, dc: 20.4, odMin: 27.1, odMax: 28.5, R20: 0.082, iAir: 775 },
+  { area: 300, dc: 22.8, odMin: 29, odMax: 32, R20: 0.065, iAir: 876 },
+  { area: 400, dc: 26.5, odMin: 33, odMax: 35, R20: 0.049, iAir: 960 },
+];
+
+/** Usual 0.6/1 kV insulation thickness for a conductor size (mm). */
+const lvInsulation = (a: number) =>
+  a <= 16 ? 0.7 : a <= 35 ? 0.9 : a <= 50 ? 1.0 : a <= 95 ? 1.1 : a <= 120 ? 1.2 : a <= 150 ? 1.4 : a <= 185 ? 1.6 : a <= 240 ? 1.7 : a <= 300 ? 1.8 : 2.0;
+
+/** A TECSUN (PV) H1Z2Z2-K cable of the given size, set up for DC circuits. */
+export function tecsunCable(area: number): CableSpec {
+  const d = TECSUN_SIZES.find((x) => x.area === area) ?? TECSUN_SIZES[1];
+  const od = (d.odMin + d.odMax) / 2;
+  const ins = lvInsulation(d.area);
+  const sheath = Math.max(0.5, Math.round(((od - d.dc) / 2 - ins) * 100) / 100);
+  return {
+    name: `Prysmian TECSUN (PV) H1Z2Z2-K 1×${d.area} mm² Cu, DC 1.5 kV`,
+    U0_kV: 1,
+    maxTemp_C: 90,
+    system: 'dc',
+    conductor: {
+      material: 'Cu',
+      construction: 'stranded',
+      millikenWires: 'insulated',
+      area_mm2: d.area,
+      diameter_mm: d.dc,
+      R20_ohm_km: d.R20,
+      Rac_ohm_km: null,
+      ks: null,
+      kp: null,
+    },
+    conductorScreen_mm: 0,
+    insulation: { material: 'EPR-MV', thickness_mm: ins, rhoT: null, epsR: null, tanDelta: null },
+    insulationScreen_mm: 0,
+    bedding_mm: 0,
+    screen: { form: 'none', material: 'Cu', thickness_mm: 0, wireCount: null, area_mm2: null, R20_ohm_km: null, corrugationOD_mm: null },
+    jacket: { material: 'EVA', thickness_mm: sheath, rhoT: null },
+    overallDiameter_mm: Math.round(od * 100) / 100,
+  };
+}

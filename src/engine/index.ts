@@ -14,6 +14,8 @@ export {
 } from './solver';
 export * from './trench';
 export * from './conduit';
+export * from './dxf';
+export * from './dxfLayout';
 export * as losses from './losses';
 export * as thermal from './thermal';
 export { fieldTemperature, type FieldModel, type FieldSource } from './field';

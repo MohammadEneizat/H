@@ -134,7 +134,7 @@ export const INSULATIONS: Record<InsulationKey, InsulationData> = {
   },
 };
 
-export type JacketKey = 'PE' | 'PVC-35' | 'PVC-HV' | 'PCP' | 'custom';
+export type JacketKey = 'PE' | 'PVC-35' | 'PVC-HV' | 'PCP' | 'EVA' | 'custom';
 
 export interface JacketData {
   label: string;
@@ -149,6 +149,7 @@ export const JACKETS: Record<JacketKey, JacketData> = {
   'PVC-35': { label: 'PVC, cables up to 35 kV', rhoT: 5.0, solarAbsorption: 0.6 },
   'PVC-HV': { label: 'PVC, cables above 35 kV', rhoT: 6.0, solarAbsorption: 0.6 },
   PCP: { label: 'Polychloroprene', rhoT: 5.5, solarAbsorption: 0.8 },
+  EVA: { label: 'EVA rubber (typical value)', rhoT: 5.0, solarAbsorption: 0.6 },
   custom: { label: 'Other (enter ρ)', rhoT: 3.5, solarAbsorption: 0.6 },
 };
 
