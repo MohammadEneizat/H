@@ -31,6 +31,7 @@ import {
 } from '../engine';
 import { CableGlyph, DC_PLUS, GroundDefs, HeatLegend, HeatOverlay, metalOf } from './Drawing';
 import { DxfImport } from './DxfImport';
+import { saveFile, saveMessage } from './save';
 import sampleDxf from '../samples/pv-dc-trench.dxf?raw';
 import { NumField, SelectField, Segmented, TextField, Toggle } from './fields';
 import { amps, fmt } from './format';
@@ -1323,6 +1324,16 @@ export function TrenchEditor({ cable, inst, iec, num, pal, onChange, undo, redo,
             </button>
           </>
         )}
+        <button
+          type="button"
+          className="btn btn-quiet"
+          onClick={async () => {
+            const outcome = await saveFile('pv-dc-trench.dxf', new Blob([sampleDxf], { type: 'application/dxf' }));
+            setDxfMsg(saveMessage(outcome, 'Sample DXF'));
+          }}
+        >
+          Download the sample DXF
+        </button>
       </div>
     </>
   );
